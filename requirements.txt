@@ -1,0 +1,12 @@
+flask==3.1.0
+requests==2.32.3
+python-dotenv==1.0.1
+beautifulsoup4==4.12.3
+feedparser==6.0.11
+mysql-connector-python==9.2.0
+
+# Optional – uncomment for extra sources:
+# python-jobspy        # Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google via JobSpy scraper
+
+# Optional – LinkedIn (Direct) browser mode (log in once, scrape rendered page, auto-close):
+# playwright           # Also run: playwright install chromium

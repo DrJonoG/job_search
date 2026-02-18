@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+{% block title %}Notes – job_search{% endblock %}
+
+{% block extra_head %}
+<!-- Quill rich text editor -->
+<link href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css" rel="stylesheet">
+{% endblock %}
+
+{% block content %}
+<!-- Header -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4">
+    <div>
+        <h3 class="fw-bold mb-1"><i class="bi bi-journal-text me-2 text-warning"></i>Notes</h3>
+        <p class="text-muted mb-0"><span id="totalNotes">{{ stats.notes_count }}</span> notes saved</p>
+    </div>
+    <div class="d-flex gap-2">
+        <input type="text" id="notesSearch" class="form-control form-control-sm" placeholder="Search notes..." style="width: 200px;">
+        <button class="btn btn-primary btn-sm" id="newNoteBtn">
+            <i class="bi bi-plus-lg me-1"></i> New Note
+        </button>
+    </div>
+</div>
+
+<!-- Loading -->
+<div id="notesLoading" class="text-center py-5">
+    <div class="spinner-border text-primary" role="status"></div>
+    <p class="text-muted mt-2">Loading notes...</p>
+</div>
+
+<!-- Empty State -->
+<div id="notesEmpty" class="text-center py-5" style="display:none;">
+    <i class="bi bi-journal-text display-1 text-muted"></i>
+    <h4 class="mt-3 text-muted">No notes yet</h4>
+    <p class="text-muted">Create your first note to keep track of great answers, useful tips, or anything job-related.</p>
+    <button class="btn btn-primary mt-2" onclick="openNoteEditor()"><i class="bi bi-plus-lg me-1"></i> Create Note</button>
+</div>
+
+<!-- Notes List -->
+<div id="notesList" class="row g-3"></div>
+
+<!-- Note Editor Modal -->
+<div class="modal fade" id="noteEditorModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header border-0">
+                <h5 class="modal-title fw-bold" id="noteEditorTitle">New Note</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label for="noteTitleInput" class="form-label">Title</label>
+                    <input type="text" class="form-control" id="noteTitleInput" placeholder="e.g. Great answer about leadership experience">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Content</label>
+                    <div id="noteEditorContainer">
+                        <div id="noteEditor"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer border-0">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="noteSaveBtn" onclick="saveNote()">
+                    <i class="bi bi-check-lg me-1"></i> Save Note
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="noteDeleteModal" tabindex="-1">
+    <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+            <div class="modal-header border-0">
+                <h5 class="modal-title fw-bold">Delete Note</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted mb-0">Are you sure you want to delete this note? This cannot be undone.</p>
+            </div>
+            <div class="modal-footer border-0">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="noteDeleteConfirmBtn" onclick="confirmDeleteNote()">
+                    <i class="bi bi-trash me-1"></i> Delete
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
+<script>
+// ── Notes state ───────────────────────────────────────────────
+let _notesQuill = null;
+let _editingNoteId = null;
+let _deletingNoteId = null;
+let _noteEditorModal = null;
+let _noteDeleteModal = null;
+
+document.addEventListener('DOMContentLoaded', () => {
+    _noteEditorModal = new bootstrap.Modal(document.getElementById('noteEditorModal'));
+    _noteDeleteModal = new bootstrap.Modal(document.getElementById('noteDeleteModal'));
+
+    // Init Quill
+    _notesQuill = new Quill('#noteEditor', {
+        theme: 'snow',
+        placeholder: 'Write your note here...',
+        modules: {
+            toolbar: [
+                [{ 'header': [1, 2, 3, false] }],
+                ['bold', 'italic', 'underline', 'strike'],
+                [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+                ['blockquote', 'code-block'],
+                ['link'],
+                ['clean'],
+            ],
+        },
+    });
+
+    document.getElementById('newNoteBtn').addEventListener('click', () => openNoteEditor());
+
+    // Search debounce
+    let _searchTimer = null;
+    document.getElementById('notesSearch').addEventListener('input', () => {
+        clearTimeout(_searchTimer);
+        _searchTimer = setTimeout(() => loadNotes(), 350);
+    });
+
+    loadNotes();
+});
+
+function openNoteEditor(noteId = null) {
+    _editingNoteId = noteId;
+    document.getElementById('noteTitleInput').value = '';
+    _notesQuill.setContents([]);
+    document.getElementById('noteEditorTitle').textContent = noteId ? 'Edit Note' : 'New Note';
+
+    if (noteId) {
+        fetch(`/api/notes/${noteId}`)
+            .then(r => r.json())
+            .then(note => {
+                document.getElementById('noteTitleInput').value = note.title || '';
+                _notesQuill.root.innerHTML = note.body || '';
+            })
+            .catch(err => showToast('Failed to load note: ' + err.message, 'danger'));
+    }
+
+    _noteEditorModal.show();
+    setTimeout(() => document.getElementById('noteTitleInput').focus(), 300);
+}
+
+async function saveNote() {
+    const title = document.getElementById('noteTitleInput').value.trim();
+    const body = _notesQuill.root.innerHTML;
+
+    if (!title) {
+        showToast('Please enter a title', 'warning');
+        document.getElementById('noteTitleInput').focus();
+        return;
+    }
+
+    const btn = document.getElementById('noteSaveBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
+
+    try {
+        const url = _editingNoteId ? `/api/notes/${_editingNoteId}` : '/api/notes';
+        const method = _editingNoteId ? 'PUT' : 'POST';
+
+        const resp = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, body }),
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+            showToast(data.error, 'danger');
+            return;
+        }
+
+        showToast(_editingNoteId ? 'Note updated' : 'Note created', 'success');
+        _noteEditorModal.hide();
+        loadNotes();
+    } catch (err) {
+        showToast('Failed to save note: ' + err.message, 'danger');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-check-lg me-1"></i> Save Note';
+    }
+}
+
+function promptDeleteNote(noteId) {
+    _deletingNoteId = noteId;
+    _noteDeleteModal.show();
+}
+
+async function confirmDeleteNote() {
+    if (!_deletingNoteId) return;
+
+    const btn = document.getElementById('noteDeleteConfirmBtn');
+    btn.disabled = true;
+
+    try {
+        const resp = await fetch(`/api/notes/${_deletingNoteId}`, { method: 'DELETE' });
+        const data = await resp.json();
+
+        if (data.error) {
+            showToast(data.error, 'danger');
+            return;
+        }
+
+        showToast('Note deleted', 'info');
+        _noteDeleteModal.hide();
+        loadNotes();
+    } catch (err) {
+        showToast('Failed to delete note: ' + err.message, 'danger');
+    } finally {
+        btn.disabled = false;
+        _deletingNoteId = null;
+    }
+}
+
+async function loadNotes() {
+    const listEl = document.getElementById('notesList');
+    const loadingEl = document.getElementById('notesLoading');
+    const emptyEl = document.getElementById('notesEmpty');
+
+    if (!listEl) return;
+
+    listEl.innerHTML = '';
+    loadingEl.style.display = 'block';
+    emptyEl.style.display = 'none';
+
+    const query = document.getElementById('notesSearch')?.value || '';
+    const params = new URLSearchParams();
+    if (query) params.set('q', query);
+
+    try {
+        const resp = await fetch(`/api/notes?${params.toString()}`);
+        const data = await resp.json();
+
+        loadingEl.style.display = 'none';
+
+        if (!data.notes || data.notes.length === 0) {
+            emptyEl.style.display = 'block';
+            document.getElementById('totalNotes').textContent = '0';
+            return;
+        }
+
+        document.getElementById('totalNotes').textContent = data.total;
+
+        data.notes.forEach((note, idx) => {
+            listEl.innerHTML += renderNoteCard(note, idx);
+        });
+    } catch (err) {
+        loadingEl.style.display = 'none';
+        listEl.innerHTML = `<div class="col-12"><div class="alert alert-danger">Failed to load notes: ${err.message}</div></div>`;
+    }
+}
+
+function renderNoteCard(note, idx) {
+    // Strip HTML for preview
+    const tmp = document.createElement('div');
+    tmp.innerHTML = note.body || '';
+    const preview = (tmp.textContent || tmp.innerText || '').substring(0, 180);
+    const updatedAt = formatDate(note.updated_at);
+
+    return `
+    <div class="col-12 col-md-4 fade-in" style="animation-delay: ${idx * 0.03}s">
+        <div class="note-card" onclick="openNoteEditor(${note.id})">
+            <div class="d-flex justify-content-between align-items-start mb-2">
+                <div class="note-card-title">${escapeHtml(note.title)}</div>
+                <div class="d-flex gap-1">
+                    <button class="action-btn note-edit-btn" onclick="event.stopPropagation(); openNoteEditor(${note.id})" title="Edit note">
+                        <i class="bi bi-pencil"></i>
+                    </button>
+                    <button class="action-btn note-delete-btn" onclick="event.stopPropagation(); promptDeleteNote(${note.id})" title="Delete note">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="note-card-preview">${escapeHtml(preview)}</div>
+            <div class="note-card-meta">
+                <i class="bi bi-clock me-1"></i>${updatedAt}
+            </div>
+        </div>
+    </div>`;
+}
+</script>
+{% endblock %}

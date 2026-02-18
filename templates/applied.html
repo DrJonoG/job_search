@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Applied – job_search{% endblock %}
+
+{% block content %}
+<!-- Header -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4">
+    <div>
+        <h3 class="fw-bold mb-1"><i class="bi bi-send-check me-2 text-success"></i>Applied</h3>
+        <p class="text-muted mb-0"><span id="totalApplied">{{ stats.applied_count }}</span> applications tracked</p>
+    </div>
+    <div class="d-flex gap-2">
+        <button class="btn btn-primary btn-sm" onclick="window.location='/jobs'">
+            <i class="bi bi-collection me-1"></i> Job Board
+        </button>
+    </div>
+</div>
+
+<!-- Loading -->
+<div id="appliedLoading" class="text-center py-5">
+    <div class="spinner-border text-primary" role="status"></div>
+    <p class="text-muted mt-2">Loading applications...</p>
+</div>
+
+<!-- Empty State -->
+<div id="appliedEmpty" class="text-center py-5" style="display:none;">
+    <i class="bi bi-send display-1 text-muted"></i>
+    <h4 class="mt-3 text-muted">No applications tracked yet</h4>
+    <p class="text-muted">Click the <i class="bi bi-send-check text-success"></i> icon on any job to mark it as applied.</p>
+    <a href="/jobs" class="btn btn-primary mt-2"><i class="bi bi-collection me-1"></i> Browse Jobs</a>
+</div>
+
+<!-- Job List -->
+<div id="appliedList"></div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', () => loadApplications());
+</script>
+{% endblock %}
