@@ -163,3 +163,44 @@ CREATE TABLE IF NOT EXISTS `notes` (
   PRIMARY KEY (`id`),
   FULLTEXT INDEX `ft_notes_search` (`title`, `body`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ── AI Prompts table ────────────────────────────────────────────
+-- Stores reusable AI analysis configurations (CV + preferences).
+-- One prompt can be flagged as `is_active` to be the default when
+-- running analyses. The job description is NOT stored here — it is
+-- injected at analysis time from the `jobs` table.
+
+CREATE TABLE IF NOT EXISTS `ai_prompts` (
+  `id`              INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  `title`           VARCHAR(255)  NOT NULL DEFAULT '' COMMENT 'Human-readable name for this prompt config',
+  `model`           VARCHAR(100)  NOT NULL DEFAULT '' COMMENT 'Ollama model to use, e.g. llama3.1',
+  `cv`              MEDIUMTEXT    NOT NULL COMMENT 'Full CV / résumé as plain text',
+  `about_me`        TEXT          NOT NULL COMMENT 'Short personal summary / bio',
+  `preferences`     TEXT          NOT NULL COMMENT 'What the user is looking for (role, salary, remote, etc.)',
+  `extra_context`   TEXT          NOT NULL COMMENT 'Any other information for the LLM to consider',
+  `is_active`       TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '1 = default prompt used for analyses',
+  `created_at`      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ── AI Analyses table ───────────────────────────────────────────
+-- Each row is the result of running an ai_prompt against a job.
+-- `result` is the raw JSON returned by the LLM and includes:
+--   keywords, key_skills, description, match_score, score_reasoning,
+--   skills_matched, skills_missing, recommendation, recommendation_notes.
+
+CREATE TABLE IF NOT EXISTS `ai_analyses` (
+  `id`          INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  `job_id`      VARCHAR(64)   NOT NULL COMMENT 'References jobs.job_id',
+  `prompt_id`   INT UNSIGNED  NOT NULL COMMENT 'References ai_prompts.id',
+  `model`       VARCHAR(100)  NOT NULL DEFAULT '' COMMENT 'Ollama model used, e.g. llama3.1',
+  `result`      JSON          NOT NULL COMMENT 'Structured JSON response from the LLM',
+  `created_at`  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_analysis_job_prompt` (`job_id`, `prompt_id`),
+  INDEX `idx_analysis_job`    (`job_id`),
+  INDEX `idx_analysis_prompt` (`prompt_id`),
+  CONSTRAINT `fk_analysis_job`    FOREIGN KEY (`job_id`)    REFERENCES `jobs` (`job_id`)        ON DELETE CASCADE,
+  CONSTRAINT `fk_analysis_prompt` FOREIGN KEY (`prompt_id`) REFERENCES `ai_prompts` (`id`)      ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -403,11 +403,13 @@ class JobStorage:
             if total == 0:
                 cursor.execute("SELECT COUNT(*) AS cnt FROM notes")
                 notes_count = cursor.fetchone()["cnt"]
+                cursor.execute("SELECT COUNT(*) AS cnt FROM ai_prompts")
+                ai_prompts_count = cursor.fetchone()["cnt"]
                 cursor.close()
                 return {
                     "total": 0, "sources": {}, "remote_count": 0,
                     "job_types": {}, "favourite_count": 0, "applied_count": 0,
-                    "notes_count": notes_count,
+                    "notes_count": notes_count, "ai_prompts_count": ai_prompts_count,
                 }
 
             cursor.execute("SELECT source, COUNT(*) AS cnt FROM jobs GROUP BY source")
@@ -431,6 +433,9 @@ class JobStorage:
             cursor.execute("SELECT COUNT(*) AS cnt FROM notes")
             notes_count = cursor.fetchone()["cnt"]
 
+            cursor.execute("SELECT COUNT(*) AS cnt FROM ai_prompts")
+            ai_prompts_count = cursor.fetchone()["cnt"]
+
             cursor.close()
             return {
                 "total": total,
@@ -440,6 +445,7 @@ class JobStorage:
                 "favourite_count": favourite_count,
                 "applied_count": applied_count,
                 "notes_count": notes_count,
+                "ai_prompts_count": ai_prompts_count,
             }
         finally:
             conn.close()
@@ -807,6 +813,359 @@ class JobStorage:
             else:
                 out[k] = str(v)
         return out
+
+    # ══════════════════════════════════════════════════════════════
+    #  AI ANALYSES
+    # ══════════════════════════════════════════════════════════════
+
+    def save_ai_analysis(
+        self, job_id: str, prompt_id: int, model: str, result: dict
+    ) -> int:
+        """
+        Upsert an AI analysis result for a (job, prompt) pair.
+        Re-running an analysis overwrites the previous result and updates
+        created_at to reflect when the latest run completed.
+        Returns the row id.
+        """
+        import json
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO ai_analyses (job_id, prompt_id, model, result)
+                   VALUES (%s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE
+                       model      = VALUES(model),
+                       result     = VALUES(result),
+                       created_at = NOW()""",
+                (job_id, prompt_id, model, json.dumps(result)),
+            )
+            # Fetch id reliably after upsert
+            cursor.execute(
+                "SELECT id FROM ai_analyses WHERE job_id=%s AND prompt_id=%s",
+                (job_id, prompt_id),
+            )
+            row = cursor.fetchone()
+            analysis_id = row[0] if row else 0
+            cursor.close()
+            return analysis_id
+        finally:
+            conn.close()
+
+    def get_ai_analysis(self, analysis_id: int) -> Optional[dict]:
+        """Retrieve a single AI analysis by id."""
+        import json
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM ai_analyses WHERE id=%s", (analysis_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            if row is None:
+                return None
+            item = self._normalize_note(row)
+            try:
+                item["result"] = json.loads(row["result"]) if isinstance(row["result"], str) else row["result"]
+            except (json.JSONDecodeError, TypeError):
+                item["result"] = {}
+            return item
+        finally:
+            conn.close()
+
+    def get_ai_analyses_for_job(self, job_id: str) -> list[dict]:
+        """Return all AI analyses for a given job, newest first."""
+        import json
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                """SELECT a.*, p.title AS prompt_title, p.model AS prompt_model
+                   FROM ai_analyses a
+                   LEFT JOIN ai_prompts p ON p.id = a.prompt_id
+                   WHERE a.job_id = %s
+                   ORDER BY a.created_at DESC""",
+                (job_id,),
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+            result = []
+            for row in rows:
+                item = self._normalize_note(row)
+                try:
+                    item["result"] = json.loads(row["result"]) if isinstance(row["result"], str) else row["result"]
+                except (json.JSONDecodeError, TypeError):
+                    item["result"] = {}
+                result.append(item)
+            return result
+        finally:
+            conn.close()
+
+    def get_ai_analyses_list(
+        self,
+        query: str = "",
+        min_score: int = 0,
+        recommendations: list | None = None,
+        prompt_id: int | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """
+        Return a paginated list of AI analyses joined with job data, newest first.
+        Returns (rows, total_count).
+        """
+        import json as _json_mod
+
+        where_parts: list[str] = []
+        params: list = []
+
+        if min_score and min_score > 0:
+            where_parts.append(
+                "CAST(JSON_EXTRACT(a.result, '$.match_score') AS UNSIGNED) >= %s"
+            )
+            params.append(min_score)
+
+        if recommendations:
+            ph = ",".join(["%s"] * len(recommendations))
+            where_parts.append(
+                f"JSON_UNQUOTE(JSON_EXTRACT(a.result, '$.recommendation')) IN ({ph})"
+            )
+            params.extend(recommendations)
+
+        if prompt_id:
+            where_parts.append("a.prompt_id = %s")
+            params.append(prompt_id)
+
+        if query:
+            q = f"%{query}%"
+            where_parts.append(
+                "(LOWER(j.title) LIKE LOWER(%s)"
+                " OR LOWER(j.company) LIKE LOWER(%s)"
+                " OR LOWER(CONVERT(a.result USING utf8mb4)) LIKE LOWER(%s))"
+            )
+            params.extend([q, q, q])
+
+        where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+        base_from = f"""
+            FROM ai_analyses a
+            JOIN jobs j ON a.job_id = j.job_id
+            LEFT JOIN ai_prompts p      ON p.id       = a.prompt_id
+            LEFT JOIN favourites fav    ON fav.job_id  = j.job_id
+            LEFT JOIN applications app  ON app.job_id  = j.job_id
+            LEFT JOIN not_interested ni ON ni.job_id   = j.job_id
+            {where_sql}
+        """
+
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor(dictionary=True)
+
+            cursor.execute(f"SELECT COUNT(*) AS cnt {base_from}", params)
+            total: int = cursor.fetchone()["cnt"]
+
+            cursor.execute(
+                f"""SELECT
+                        a.id              AS analysis_id,
+                        a.job_id,
+                        a.prompt_id,
+                        a.model           AS analysis_model,
+                        a.result,
+                        a.created_at      AS analysed_at,
+                        j.title,
+                        j.company,
+                        j.location,
+                        j.remote,
+                        j.job_type,
+                        j.salary_min,
+                        j.salary_max,
+                        j.salary_currency,
+                        j.url,
+                        j.source,
+                        j.description                                AS job_description_raw,
+                        IF(fav.job_id IS NOT NULL, 1, 0)             AS is_favourite,
+                        IF(app.job_id IS NOT NULL, 1, 0)             AS is_applied,
+                        IF(ni.job_id  IS NOT NULL, 1, 0)             AS is_not_interested,
+                        j.company_logo,
+                        p.title           AS prompt_title
+                    {base_from}
+                    ORDER BY a.created_at DESC
+                    LIMIT %s OFFSET %s""",
+                params + [limit, offset],
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+
+            results = []
+            for row in rows:
+                item: dict = {}
+                for k, v in row.items():
+                    if k == "result":
+                        continue
+                    if v is None:
+                        item[k] = ""
+                    elif hasattr(v, "isoformat"):
+                        item[k] = v.strftime("%Y-%m-%d %H:%M:%S")
+                    elif isinstance(v, (int, float)):
+                        item[k] = v
+                    else:
+                        item[k] = str(v)
+                raw = row.get("result", "{}")
+                try:
+                    item["result"] = (
+                        _json_mod.loads(raw) if isinstance(raw, str) else (raw or {})
+                    )
+                except Exception:
+                    item["result"] = {}
+                results.append(item)
+
+            return results, total
+        finally:
+            conn.close()
+
+    # ══════════════════════════════════════════════════════════════
+    #  AI PROMPTS
+    # ══════════════════════════════════════════════════════════════
+
+    def create_ai_prompt(
+        self,
+        title: str,
+        model: str,
+        cv: str,
+        about_me: str,
+        preferences: str,
+        extra_context: str,
+        is_active: bool = False,
+    ) -> int:
+        """Create a new AI prompt configuration. Returns the new id."""
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor()
+            if is_active:
+                cursor.execute("UPDATE ai_prompts SET is_active = 0")
+            cursor.execute(
+                """INSERT INTO ai_prompts
+                   (title, model, cv, about_me, preferences, extra_context, is_active)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (title, model, cv, about_me, preferences, extra_context, int(is_active)),
+            )
+            prompt_id = cursor.lastrowid
+            cursor.close()
+            return prompt_id
+        finally:
+            conn.close()
+
+    def get_ai_prompts(self) -> list[dict]:
+        """Return all AI prompt configurations, active first then newest."""
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT * FROM ai_prompts ORDER BY is_active DESC, updated_at DESC"
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+            return [self._normalize_note(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_ai_prompt(self, prompt_id: int) -> Optional[dict]:
+        """Retrieve a single AI prompt by id."""
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM ai_prompts WHERE id = %s", (prompt_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            if row is None:
+                return None
+            return self._normalize_note(row)
+        finally:
+            conn.close()
+
+    def get_active_ai_prompt(self) -> Optional[dict]:
+        """Return the currently active AI prompt, or None."""
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM ai_prompts WHERE is_active = 1 LIMIT 1")
+            row = cursor.fetchone()
+            cursor.close()
+            if row is None:
+                return None
+            return self._normalize_note(row)
+        finally:
+            conn.close()
+
+    def update_ai_prompt(
+        self,
+        prompt_id: int,
+        title: str,
+        model: str,
+        cv: str,
+        about_me: str,
+        preferences: str,
+        extra_context: str,
+        is_active: bool = False,
+    ) -> bool:
+        """Update an existing AI prompt. Returns True if found and updated."""
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor()
+            if is_active:
+                cursor.execute(
+                    "UPDATE ai_prompts SET is_active = 0 WHERE id != %s", (prompt_id,)
+                )
+            cursor.execute(
+                """UPDATE ai_prompts
+                   SET title=%s, model=%s, cv=%s, about_me=%s, preferences=%s,
+                       extra_context=%s, is_active=%s
+                   WHERE id=%s""",
+                (title, model, cv, about_me, preferences, extra_context, int(is_active), prompt_id),
+            )
+            updated = cursor.rowcount > 0
+            cursor.close()
+            return updated
+        finally:
+            conn.close()
+
+    def set_active_ai_prompt(self, prompt_id: int) -> bool:
+        """Mark one prompt as active and clear all others. Returns True if found."""
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE ai_prompts SET is_active = 0")
+            cursor.execute(
+                "UPDATE ai_prompts SET is_active = 1 WHERE id = %s", (prompt_id,)
+            )
+            updated = cursor.rowcount > 0
+            cursor.close()
+            return updated
+        finally:
+            conn.close()
+
+    def delete_ai_prompt(self, prompt_id: int) -> bool:
+        """Delete an AI prompt. Returns True if removed."""
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM ai_prompts WHERE id = %s", (prompt_id,))
+            removed = cursor.rowcount > 0
+            cursor.close()
+            return removed
+        finally:
+            conn.close()
+
+    def count_ai_prompts(self) -> int:
+        """Return total number of AI prompt configurations."""
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM ai_prompts")
+            result = cursor.fetchone()
+            cursor.close()
+            return result[0] if result else 0
+        finally:
+            conn.close()
 
     # ══════════════════════════════════════════════════════════════
     #  SAVED SEARCHES

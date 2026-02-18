@@ -53,8 +53,24 @@
                             <i class="bi bi-journal-text me-1 text-warning"></i> Notes
                         </a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/ai-analysis' %}active{% endif %}" href="/ai-analysis">
+                            <i class="bi bi-stars me-1 text-warning"></i> AI Analysis
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/ai-prompts' %}active{% endif %}" href="/ai-prompts">
+                            <i class="bi bi-robot me-1 text-info"></i> AI Prompts
+                        </a>
+                    </li>
                 </ul>
                 <div class="d-flex align-items-center gap-3">
+                    <!-- AI analysis queue indicator (hidden until queue has items) -->
+                    <span id="aiQueueBadge" class="badge bg-info text-dark align-items-center gap-1"
+                          title="AI analyses in progress" style="display:none;">
+                        <span class="spinner-border spinner-border-sm" role="status" style="width:.65rem;height:.65rem;"></span>
+                        <span id="aiQueueCount">0</span>
+                    </span>
                     <a href="/api/export" class="btn btn-sm btn-outline-secondary" title="Export CSV">
                         <i class="bi bi-download me-1"></i> Export CSV
                     </a>
@@ -95,10 +111,46 @@
                     <button id="jobModalAppliedBtn" class="btn btn-outline-success" onclick="toggleAppliedModal()">
                         <i class="bi bi-send me-1"></i> Applied
                     </button>
+                    <button id="jobModalAIBtn" class="btn btn-outline-info"
+                            onclick="AIQueue.trigger(_currentModalJobId, document.getElementById('jobModalTitle').textContent)"
+                            title="Run AI match analysis on this job">
+                        <i class="bi bi-robot me-1"></i> AI Analyse
+                    </button>
                     <a id="jobModalApply" href="#" target="_blank" class="btn btn-primary">
                         <i class="bi bi-box-arrow-up-right me-1"></i> View Original Listing
                     </a>
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Prompt Picker Modal (shown when no active AI prompt is set) -->
+    <div class="modal fade" id="promptPickerModal" tabindex="-1">
+        <div class="modal-dialog modal-md">
+            <div class="modal-content">
+                <div class="modal-header border-0">
+                    <div>
+                        <h5 class="modal-title fw-bold">
+                            <i class="bi bi-robot me-2 text-info"></i>Select AI Prompt
+                        </h5>
+                        <p class="text-muted small mb-0">
+                            No active prompt set. Analysing:
+                            <strong id="promptPickerJobTitle"></strong>
+                        </p>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body p-0">
+                    <div class="list-group list-group-flush" id="promptPickerList">
+                        <!-- Populated dynamically by ai_analyse.js -->
+                    </div>
+                </div>
+                <div class="modal-footer border-0 justify-content-between">
+                    <a href="/ai-prompts" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-gear me-1"></i> Manage Prompts
+                    </a>
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 </div>
             </div>
         </div>
@@ -110,6 +162,7 @@
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/ai_analyse.js') }}"></script>
     {% block extra_scripts %}{% endblock %}
 </body>
 </html>

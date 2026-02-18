@@ -4,7 +4,21 @@ I'm currently working full time and job hunting, consequently, my time is valuab
 
 **job_search** pulls from **30+** sources at once: Google Jobs, Indeed, LinkedIn, Glassdoor, UK boards, remote boards, ATS platforms like Greenhouse, Lever, Ashby & Workable, and more. It dumps everything into a MySQL database, deduplicates it, and gives you a clean web UI to browse, filter, favourite, and track your applications. Nothing fancy, just useful.
 
-Right now I'm working on adding a local LLM that reads through the job adverts for you. You feed it your CV, any requirements you have, and whatever other info matters to you, and it figures out which jobs are actually worth your time. Should make the whole process way less painful and help land you your next job!
+**job_search** can also analyse job listings against your CV using a local or cloud LLM, including the free tier of Google's Gemini API, which requires no credit card and handles a high volume of analyses at no cost. Feed it your CV, your preferences, and any other context that matters, and for each job it returns:
+
+- **Match score** (1–10) with detailed reasoning
+- **Skills you have** and **skills you're missing** for the role
+- **Key responsibilities**, what you'd actually be doing day-to-day
+- **Cover letter talking points** tailored to your CV and the specific job
+- **Interview prep topics** based on gaps in your profile
+- **Application tips**, concrete, role-specific advice
+- **Red flags**, unusual requirements, vague scope, low salary for seniority, etc.
+- **Company highlights**, size, type, funding, notable facts
+- **Recommendation**, apply, maybe, or skip
+
+Models run locally via Ollama, through Open WebUI (which proxies Gemini, Claude, and others), or directly via cloud provider APIs. No data leaves your machine unless you explicitly choose a cloud model.
+
+**Important**: **Privacy Notice**. Using external LLMs means your data is no longer private. If you do not want your CV to be used (or potentially used) for training models you should specifically use the local models via Ollama. Alternatively, retract information like your name, address and number from your CV, this will have no impact on the analysis.
 
 **Important**: This is just a side project while I'm actively job hunting, there might be bugs, errors and anything else. Please report anything you find, and I'll do my best to fix them.
 
@@ -20,6 +34,9 @@ Built with Python, Flask, and MySQL. Runs locally on Windows, macOS, or Linux.
 |:----------:|:----------:|
 | ![Job Detail](screenshots/job-detail.png) | ![Job Search](screenshots/job-search.png) |
 
+| AI Prompt | AI Analysis |
+|:----------:|:----------:|
+| ![AI Prompt](screenshots/ai-prompt.png) | ![AI Analysis](screenshots/ai-analysis.png) |
 
 ---
 
@@ -53,6 +70,19 @@ Built with Python, Flask, and MySQL. Runs locally on Windows, macOS, or Linux.
 - Perfect for saving great application answers, interview prep, or any job-search-related thoughts
 - **Full-text search** across note titles and content
 - Powered by [Quill](https://quilljs.com/) rich text editor
+
+### AI Prompts (LLM Analysis)
+- **Prompt configurations** bundle your CV, a personal summary, job preferences, and extra context into a reusable config that is sent alongside a job description to a local or cloud LLM
+- Create **multiple prompt configs**, e.g. one for senior data roles, one for contract positions, and switch between them freely
+- Mark one as **Active** to use it as the default when running analyses
+- Each prompt stores:
+  - **CV / Résumé**, full plain-text CV pasted directly
+  - **About Me**, a short personal summary beyond the CV
+  - **What I'm Looking For**, desired role type, salary range, remote preference, location, contract type, and any hard exclusions
+  - **Extra Context**, portfolio links, visa status, company-size preference, or any other instructions for the model
+  - **Model**, choose from locally installed Ollama models, models available through Open WebUI (e.g. Gemini), or direct cloud APIs (OpenAI, Anthropic, Google)
+- Analysis results are stored in `ai_analyses` and linked to both the prompt and the job, re-run with a different model or prompt without losing previous results
+- Each analysis returns: keywords, key skills, job description, key responsibilities, match score (1–10) with reasoning, skills matched/missing, cover letter talking points, red flags, interview prep topics, application tips, company type/size/highlights, and a recommendation (apply / maybe / skip)
 
 ### Saved Searches
 - **Save any search configuration**, keywords, location, remote, job type, experience level, salary, sources, results cap, and posted-in-last filter
@@ -250,7 +280,88 @@ python app.py
 
 Open **[http://localhost:5000](http://localhost:5000)** in your browser.
 
+### Optional: AI Job Analysis (Local LLM)
+
+The following steps set up a local AI that can read through job listings, compare them against your CV and requirements, and flag which ones are actually worth your time. This is entirely optional, the app works fine without it.
+
+#### Step 9: Install Ollama
+
+Ollama runs AI models locally on your machine with no cloud dependency. Download and run the installer from **[ollama.com](https://ollama.com)**. Once installed, Ollama runs as a background service automatically, no terminal needed to keep it alive.
+
+#### Step 10: Pull models
+
+Download models with `ollama pull` in your terminal. You can have multiple models installed and switch between them freely.
+
+**Text generation** (writing, analysis, coding):
+
+```bash
+ollama pull llama3.1
+```
+
+**Vision** (image and screenshot analysis):
+
+```bash
+ollama pull llava
+```
+
+The app talks to Ollama directly via its local API (`http://localhost:11434`), no separate GUI needed.
+
+> **Tip:** Llama 3.1 (8B) runs on most modern machines with 8 GB+ RAM. Larger variants like 70B need significantly more resources, stick with 8B to start.
+
 ---
+
+#### Step 11 (Optional): Install Open WebUI for cloud model access
+
+[Open WebUI](https://openwebui.com) is a browser-based interface that sits on top of Ollama and can also connect to external AI providers (Google Gemini, OpenAI, Anthropic, etc.). Once connected, all models, local and cloud, appear together in the job analysis model picker.
+
+**Install and run:**
+
+```bash
+pip install open-webui
+open-webui serve
+```
+
+Open WebUI starts at **http://localhost:8080**. Create an account on first launch (this account stays local to your machine).
+
+---
+
+#### Step 12 (Optional): Connect Google Gemini to Open WebUI
+
+Google's Gemini API has a **generous free tier** (as of early 2026: 1,500 requests/day for Gemini 1.5 Flash, 50 requests/day for Gemini 1.5 Pro, no credit card required). This makes it a good choice for running a high volume of job analyses at no cost.
+
+**Get a free API key:**
+
+1. Go to **[aistudio.google.com](https://aistudio.google.com)**
+2. Sign in with your Google account
+3. Click **Get API key** → **Create API key**
+4. Copy the key, you will paste it into Open WebUI below
+
+**Configure Open WebUI to use Gemini:**
+
+1. Open **http://localhost:8080** in your browser
+2. Click your **Profile icon** (bottom-left) → **Settings** → **Connections**
+3. Under the **OpenAI API** section, click the **+** button to add a new connection
+4. Enter the following:
+   - **API URL:** `https://generativelanguage.googleapis.com/v1beta/openai`
+   - **API Key:** paste your Google API key
+5. Click the **Refresh / Verify** icon (circular arrows). A green checkmark or a populated model list confirms success
+6. Click **Save**
+
+Gemini models will now appear in the **Open WebUI, via gateway ($)** group in the job analysis model picker. Despite the `$` label (indicating a cloud model), the free tier is sufficient for most use.
+
+**Connect this app to Open WebUI:**
+
+Add the following to your `.env` file, then restart the app:
+
+```env
+OPEN_WEBUI_BASE_URL=http://localhost:8080
+OPEN_WEBUI_API_KEY=<your Open WebUI API key>
+```
+
+To generate an Open WebUI API key: **Profile icon** → **Settings** → **Account** → **API Keys** → **Create new secret key**. Use this `sk-...` key (not the JWT token shown on the same page).
+
+> **Note:** The app communicates with Open WebUI's API at `http://localhost:8080` and routes all Open WebUI model calls through its OpenAI-compatible endpoint. Your Google API key stays inside Open WebUI, it is never sent directly by this app.
+
 
 ## Usage
 
@@ -288,13 +399,17 @@ Open **[http://localhost:5000](http://localhost:5000)** in your browser.
 job_search/
 ├── app.py                              # Flask web application + API routes
 ├── config.py                           # Configuration (env vars, defaults, DB settings)
+├── prompts.py                          # AI analysis system prompt and field validation schema
 ├── database.sql                        # MySQL schema (paste into phpMyAdmin)
 ├── requirements.txt                    # Python dependencies
 ├── .env.example                        # Environment variable template
 ├── .gitignore                          # Git ignore rules
 ├── README.md                           # This file
 ├── data/                               # CSV exports
-├── logs/                               # Error logs + rate limit tracking
+├── logs/                               # Runtime logs
+│   ├── error_log.txt                   # Application warnings/errors
+│   ├── llm_requests.log                # Exact prompts sent to Ollama (debug)
+│   └── llm_responses.log               # Raw Ollama responses (debug)
 ├── screenshots/                        # Screenshots for README
 ├── job_scraper/
 │   ├── __init__.py
@@ -340,12 +455,14 @@ job_search/
 │   ├── favourites.html                 # Saved/favourite jobs
 │   ├── applied.html                    # Jobs marked as applied
 │   ├── notes.html                      # Notes – rich text editor (Quill)
+│   ├── ai_prompts.html                 # AI Prompt configurations page
 │   └── error.html                      # Database connection error page
 └── static/
     ├── css/
     │   └── style.css                   # Custom styles (IBM Plex Mono, dark/light, green accent)
     └── js/
-        └── app.js                      # Frontend logic (search, filters, modal, fav/applied)
+        ├── app.js                      # Frontend logic (search, filters, modal, fav/applied)
+        └── ai_analyse.js               # AI analysis queue, prompt picker, toast notifications
 ```
 
 ---
@@ -447,6 +564,38 @@ Indexes: `FULLTEXT` index on `title` and `body`.
 | `created_at` | DATETIME | When the board search was saved |
 | `updated_at` | DATETIME | When the board search was last updated (auto-updates) |
 
+### `ai_prompts`
+
+Reusable AI analysis configurations. Each prompt bundles the user's CV and preferences so they can be combined with any job description at analysis time.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INT (PK) | Auto-increment primary key |
+| `title` | VARCHAR(255) | Human-readable name for this configuration |
+| `model` | VARCHAR(100) | Ollama model to use (e.g. `llama3.1`) |
+| `cv` | MEDIUMTEXT | Full CV / résumé as plain text |
+| `about_me` | TEXT | Personal summary / bio |
+| `preferences` | TEXT | Desired role type, salary, remote preference, exclusions, etc. |
+| `extra_context` | TEXT | Portfolio links, visa status, company-size preference, or any other instructions |
+| `is_active` | TINYINT | 1 = default prompt used for new analyses |
+| `created_at` | DATETIME | When the prompt was created |
+| `updated_at` | DATETIME | When the prompt was last updated (auto-updates) |
+
+### `ai_analyses`
+
+Stores the structured JSON output from running an AI prompt against a job listing.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INT (PK) | Auto-increment primary key |
+| `job_id` | VARCHAR(64) | FK to `jobs.job_id` (CASCADE delete) |
+| `prompt_id` | INT | FK to `ai_prompts.id` (CASCADE delete) |
+| `model` | VARCHAR(100) | Ollama model used (e.g. `llama3.1`) |
+| `result` | JSON | Structured LLM output (keywords, skills, match score, recommendation, etc.) |
+| `created_at` | DATETIME | When the analysis was run |
+
+Unique constraint on `(job_id, prompt_id)`, one analysis result per job per prompt config.
+
 ---
 
 ## API Endpoints
@@ -524,6 +673,20 @@ Indexes: `FULLTEXT` index on `title` and `body`.
 | `GET` | `/api/notes/<id>` | Get a single note |
 | `PUT` | `/api/notes/<id>` | Update a note (accepts `title`, `body`) |
 | `DELETE` | `/api/notes/<id>` | Delete a note |
+
+### AI Prompts
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/ai-prompts` | List all AI prompt configurations |
+| `POST` | `/api/ai-prompts` | Create a new prompt (accepts `title`, `cv`, `about_me`, `preferences`, `extra_context`, `is_active`) |
+| `GET` | `/api/ai-prompts/<id>` | Get a single prompt |
+| `PUT` | `/api/ai-prompts/<id>` | Update a prompt |
+| `DELETE` | `/api/ai-prompts/<id>` | Delete a prompt |
+| `POST` | `/api/ai-prompts/<id>/activate` | Set a prompt as the active default |
+| `GET` | `/api/ollama/models` | List available models, local Ollama, Open WebUI (Gemini etc.), and direct cloud APIs |
+| `POST` | `/api/ai-analyse` | Run an AI analysis of a job (accepts `job_id`, `prompt_id`; calls Ollama, validates, persists result) |
+| `GET` | `/api/ai-analyses/<job_id>` | Return all AI analyses previously run for a job |
 
 ---
 

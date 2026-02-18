@@ -5,8 +5,12 @@ beautifulsoup4==4.12.3
 feedparser==6.0.11
 mysql-connector-python==9.2.0
 
-# Optional – uncomment for extra sources:
-# python-jobspy        # Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google via JobSpy scraper
+# Local LLM & GUI
+open-webui
+ollama
 
-# Optional – LinkedIn (Direct) browser mode (log in once, scrape rendered page, auto-close):
-# playwright           # Also run: playwright install chromium
+# Optional for extra sources:
+python-jobspy        # Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google via JobSpy scraper
+
+# Optional for LinkedIn (Direct) browser mode (log in once, scrape rendered page, auto-close):
+playwright           # Also run: playwright install chromium

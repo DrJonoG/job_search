@@ -1,0 +1,659 @@
+{% extends "base.html" %}
+{% block title %}AI Analysis | job_search{% endblock %}
+
+{% block content %}
+<!-- ── Page header ──────────────────────────────────────────────── -->
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4">
+    <div>
+        <h3 class="fw-bold mb-1"><i class="bi bi-stars me-2 text-warning"></i>AI Analysis</h3>
+        <p class="text-muted mb-0" id="resultsSummary">Loading…</p>
+    </div>
+</div>
+
+<!-- ── Filters ──────────────────────────────────────────────────── -->
+<div class="card border-0 bg-body-secondary rounded-3 mb-4 p-3">
+    <div class="row g-2 align-items-end">
+        <!-- Keyword search -->
+        <div class="col-12 col-md-4">
+            <label class="form-label small text-muted mb-1">Search jobs &amp; skills</label>
+            <div class="input-group input-group-sm">
+                <span class="input-group-text"><i class="bi bi-search"></i></span>
+                <input type="text" id="filterQuery" class="form-control"
+                       placeholder="Title, company, skill…">
+                <button class="btn btn-outline-secondary" id="clearQuery" title="Clear search">
+                    <i class="bi bi-x"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Min score -->
+        <div class="col-6 col-md-2">
+            <label class="form-label small text-muted mb-1">Min score</label>
+            <select id="filterMinScore" class="form-select form-select-sm">
+                <option value="0">Any score</option>
+                <option value="5">5+</option>
+                <option value="6">6+</option>
+                <option value="7">7+</option>
+                <option value="8">8+</option>
+                <option value="9">9+</option>
+                <option value="10">10 only</option>
+            </select>
+        </div>
+
+        <!-- Recommendation -->
+        <div class="col-6 col-md-3">
+            <label class="form-label small text-muted mb-1">Recommendation</label>
+            <div class="d-flex gap-3 pt-1">
+                <div class="form-check form-check-inline m-0">
+                    <input class="form-check-input rec-check" type="checkbox" value="apply" id="recApply" checked>
+                    <label class="form-check-label small text-success fw-semibold" for="recApply">Apply</label>
+                </div>
+                <div class="form-check form-check-inline m-0">
+                    <input class="form-check-input rec-check" type="checkbox" value="maybe" id="recMaybe" checked>
+                    <label class="form-check-label small text-warning fw-semibold" for="recMaybe">Maybe</label>
+                </div>
+                <div class="form-check form-check-inline m-0">
+                    <input class="form-check-input rec-check" type="checkbox" value="skip" id="recSkip" checked>
+                    <label class="form-check-label small text-secondary fw-semibold" for="recSkip">Skip</label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Prompt filter -->
+        <div class="col-6 col-md-2">
+            <label class="form-label small text-muted mb-1">Prompt</label>
+            <select id="filterPrompt" class="form-select form-select-sm">
+                <option value="">All prompts</option>
+                {% for p in prompts %}
+                <option value="{{ p.id }}">{{ p.title }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- Reset -->
+        <div class="col-6 col-md-1 text-end">
+            <button class="btn btn-sm btn-outline-secondary w-100" id="resetFilters">
+                <i class="bi bi-arrow-counterclockwise"></i> Reset
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ── Results grid ──────────────────────────────────────────────── -->
+<div id="analysisGrid" class="row g-3">
+    <!-- Populated by JS -->
+</div>
+
+<!-- ── Load more ─────────────────────────────────────────────────── -->
+<div class="text-center mt-4" id="loadMoreWrap" style="display:none!important;">
+    <button class="btn btn-outline-secondary" id="loadMoreBtn">
+        <i class="bi bi-chevron-down me-1"></i> Load more
+    </button>
+</div>
+
+<!-- ── Empty state ───────────────────────────────────────────────── -->
+<div id="emptyState" class="text-center py-5" style="display:none;">
+    <i class="bi bi-stars fs-1 text-muted d-block mb-3"></i>
+    <h5 class="fw-semibold text-muted">No analyses yet</h5>
+    <p class="text-muted small mb-3">
+        Open any job on the <a href="/jobs">Job Board</a> and click
+        <strong>AI Analyse</strong> to get started.
+    </p>
+</div>
+
+<!-- ── Analysis modal ────────────────────────────────────────────── -->
+<div class="modal fade" id="analysisModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+
+            <!-- Header -->
+            <div class="modal-header border-0 pb-0">
+                <div class="flex-grow-1 min-w-0 me-3">
+                    <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
+                        <span id="amScoreBadge" class="badge fs-6 fw-bold rounded-pill px-3"></span>
+                        <span id="amRecBadge"   class="badge fs-6 rounded-pill px-3 text-uppercase"></span>
+                    </div>
+                    <h5 class="modal-title fw-bold mb-0" id="amTitle"></h5>
+                    <p class="text-muted small mb-0" id="amMeta"></p>
+                </div>
+                <button type="button" class="btn-close flex-shrink-0" data-bs-dismiss="modal"></button>
+            </div>
+
+            <!-- Tabs -->
+            <div class="modal-body pt-2 pb-0 px-0">
+                <ul class="nav nav-tabs px-4" id="amTabs">
+                    <li class="nav-item">
+                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#amTabAnalysis">
+                            <i class="bi bi-stars me-1 text-warning"></i> Analysis
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#amTabJob">
+                            <i class="bi bi-file-text me-1"></i> Job Listing
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content p-4">
+
+                    <!-- ── Analysis tab ──────────────────────────── -->
+                    <div class="tab-pane fade show active" id="amTabAnalysis">
+
+                        <!-- Score reasoning -->
+                        <div class="alert alert-secondary border-start border-4 border-info mb-4 py-2">
+                            <div class="small text-muted mb-1 fw-semibold text-uppercase" style="letter-spacing:.05em;">Score Reasoning</div>
+                            <div id="amScoreReasoning"></div>
+                        </div>
+
+                        <div class="row g-4">
+
+                            <!-- LEFT column -->
+                            <div class="col-12 col-lg-6">
+
+                                <!-- Skills we have -->
+                                <div class="mb-4">
+                                    <h6 class="fw-semibold mb-2">
+                                        <i class="bi bi-check-circle-fill text-success me-1"></i>Skills We Have
+                                    </h6>
+                                    <div id="amSkillsHave" class="d-flex flex-wrap gap-1"></div>
+                                </div>
+
+                                <!-- Skills missing -->
+                                <div class="mb-4">
+                                    <h6 class="fw-semibold mb-2">
+                                        <i class="bi bi-x-circle-fill text-danger me-1"></i>Skills We're Missing
+                                    </h6>
+                                    <div id="amSkillsMissing" class="d-flex flex-wrap gap-1"></div>
+                                </div>
+
+                                <!-- Key responsibilities -->
+                                <div class="mb-4">
+                                    <h6 class="fw-semibold mb-2">
+                                        <i class="bi bi-list-check text-info me-1"></i>Key Responsibilities
+                                    </h6>
+                                    <ul class="small ps-3 mb-0" id="amResponsibilities"></ul>
+                                </div>
+
+                                <!-- Job details row -->
+                                <div class="mb-4">
+                                    <h6 class="fw-semibold mb-2">
+                                        <i class="bi bi-info-circle text-secondary me-1"></i>Role Details
+                                    </h6>
+                                    <table class="table table-sm table-borderless mb-0 small">
+                                        <tbody>
+                                            <tr><td class="text-muted w-50">Seniority</td>      <td id="amSeniority"></td></tr>
+                                            <tr><td class="text-muted">Experience</td>          <td id="amExperience"></td></tr>
+                                            <tr><td class="text-muted">Salary</td>              <td id="amSalary"></td></tr>
+                                            <tr><td class="text-muted">Remote</td>              <td id="amRemote"></td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                            </div>
+
+                            <!-- RIGHT column -->
+                            <div class="col-12 col-lg-6">
+
+                                <!-- Cover letter talking points -->
+                                <div class="mb-4">
+                                    <h6 class="fw-semibold mb-2">
+                                        <i class="bi bi-pen-fill text-primary me-1"></i>Cover Letter Talking Points
+                                    </h6>
+                                    <ul class="small ps-3 mb-0" id="amCoverLetter"></ul>
+                                </div>
+
+                                <!-- Interview prep -->
+                                <div class="mb-4">
+                                    <h6 class="fw-semibold mb-2">
+                                        <i class="bi bi-mortarboard-fill text-info me-1"></i>Interview Prep Topics
+                                    </h6>
+                                    <ul class="small ps-3 mb-0" id="amInterviewPrep"></ul>
+                                </div>
+
+                                <!-- Application tip -->
+                                <div class="mb-4">
+                                    <h6 class="fw-semibold mb-2">
+                                        <i class="bi bi-lightbulb-fill text-warning me-1"></i>Application Tip
+                                    </h6>
+                                    <p class="small mb-0 fst-italic" id="amApplicationTip"></p>
+                                </div>
+
+                                <!-- Red flags -->
+                                <div class="mb-4" id="amRedFlagsWrap">
+                                    <h6 class="fw-semibold mb-2">
+                                        <i class="bi bi-flag-fill text-danger me-1"></i>Red Flags
+                                    </h6>
+                                    <ul class="small ps-3 mb-0" id="amRedFlags"></ul>
+                                </div>
+
+                            </div>
+
+                            <!-- Company info (full width) -->
+                            <div class="col-12">
+                                <hr class="my-0">
+                                <div class="mt-3">
+                                    <h6 class="fw-semibold mb-2">
+                                        <i class="bi bi-building me-1 text-secondary"></i>Company Info
+                                    </h6>
+                                    <div class="row g-2">
+                                        <div class="col-6 col-md-3">
+                                            <div class="small text-muted">Type</div>
+                                            <div class="small fw-semibold" id="amCompanyType">—</div>
+                                        </div>
+                                        <div class="col-6 col-md-3">
+                                            <div class="small text-muted">Size</div>
+                                            <div class="small fw-semibold" id="amCompanySize">—</div>
+                                        </div>
+                                        <div class="col-12 col-md-6">
+                                            <div class="small text-muted mb-1">Highlights</div>
+                                            <ul class="small ps-3 mb-0" id="amCompanyHighlights"></ul>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Recommendation notes (full width) -->
+                            <div class="col-12">
+                                <div class="alert py-2 mb-0" id="amRecAlert">
+                                    <div class="small fw-semibold mb-1" id="amRecLabel"></div>
+                                    <div class="small" id="amRecNotes"></div>
+                                </div>
+                            </div>
+
+                        </div><!-- /row -->
+                    </div><!-- /analysis tab -->
+
+                    <!-- ── Job Listing tab ───────────────────────── -->
+                    <div class="tab-pane fade" id="amTabJob">
+                        <div class="d-flex flex-wrap gap-2 mb-3" id="amJobMeta"></div>
+                        <div id="amJobDescription" class="small" style="white-space:pre-wrap; line-height:1.7;"></div>
+                    </div>
+
+                </div><!-- /tab-content -->
+            </div><!-- /modal-body -->
+
+            <div class="modal-footer border-0">
+                <button id="amFavBtn"     class="btn btn-outline-danger btn-sm"   onclick="amToggleFav()">
+                    <i class="bi bi-heart me-1"></i> Favourite
+                </button>
+                <button id="amAppliedBtn" class="btn btn-outline-success btn-sm"  onclick="amToggleApplied()">
+                    <i class="bi bi-send me-1"></i> Applied
+                </button>
+                <button id="amAIBtn"      class="btn btn-outline-info btn-sm"
+                        title="Re-run AI analysis">
+                    <i class="bi bi-robot me-1"></i> Re-analyse
+                </button>
+                <a id="amJobLink" href="#" target="_blank" class="btn btn-primary btn-sm">
+                    <i class="bi bi-box-arrow-up-right me-1"></i> View Listing
+                </a>
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+            </div>
+
+        </div><!-- /modal-content -->
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// ── State ────────────────────────────────────────────────────────
+let _analyses    = [];
+let _total       = 0;
+let _offset      = 0;
+const _limit     = 50;
+let _loading     = false;
+let _searchTimer = null;
+let _currentItem = null;   // currently open analysis item
+
+// ── Boot ─────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+    bindFilters();
+    loadAnalyses(true);
+});
+
+// ── Filter bindings ──────────────────────────────────────────────
+function bindFilters() {
+    document.getElementById('filterQuery').addEventListener('input', () => {
+        clearTimeout(_searchTimer);
+        _searchTimer = setTimeout(() => loadAnalyses(true), 350);
+    });
+    document.getElementById('clearQuery').addEventListener('click', () => {
+        document.getElementById('filterQuery').value = '';
+        loadAnalyses(true);
+    });
+    document.getElementById('filterMinScore').addEventListener('change', () => loadAnalyses(true));
+    document.getElementById('filterPrompt').addEventListener('change',   () => loadAnalyses(true));
+    document.querySelectorAll('.rec-check').forEach(cb =>
+        cb.addEventListener('change', () => loadAnalyses(true))
+    );
+    document.getElementById('resetFilters').addEventListener('click', () => {
+        document.getElementById('filterQuery').value    = '';
+        document.getElementById('filterMinScore').value = '0';
+        document.getElementById('filterPrompt').value   = '';
+        document.querySelectorAll('.rec-check').forEach(cb => cb.checked = true);
+        loadAnalyses(true);
+    });
+    document.getElementById('loadMoreBtn').addEventListener('click', () => loadAnalyses(false));
+}
+
+// ── Fetch ────────────────────────────────────────────────────────
+async function loadAnalyses(reset = true) {
+    if (_loading) return;
+    _loading = true;
+
+    if (reset) {
+        _offset   = 0;
+        _analyses = [];
+    }
+
+    const query    = document.getElementById('filterQuery').value.trim();
+    const minScore = document.getElementById('filterMinScore').value;
+    const promptId = document.getElementById('filterPrompt').value;
+    const recs     = [...document.querySelectorAll('.rec-check:checked')].map(c => c.value);
+
+    const params = new URLSearchParams({
+        query,
+        min_score:      minScore,
+        recommendation: recs.join(','),
+        limit:          _limit,
+        offset:         _offset,
+    });
+    if (promptId) params.set('prompt_id', promptId);
+
+    try {
+        const resp = await fetch('/api/ai-analyses?' + params);
+        const data = await resp.json();
+
+        _total = data.total;
+        _analyses = reset ? data.analyses : [..._analyses, ...data.analyses];
+        _offset   = _analyses.length;
+
+        renderGrid(reset);
+        updateSummary();
+    } catch (err) {
+        console.error('Failed to load analyses:', err);
+    } finally {
+        _loading = false;
+    }
+}
+
+// ── Render grid ──────────────────────────────────────────────────
+function renderGrid(reset) {
+    const grid      = document.getElementById('analysisGrid');
+    const empty     = document.getElementById('emptyState');
+    const lmWrap    = document.getElementById('loadMoreWrap');
+    const lmBtn     = document.getElementById('loadMoreBtn');
+
+    if (_analyses.length === 0 && reset) {
+        grid.innerHTML = '';
+        empty.style.display  = '';
+        lmWrap.style.display = 'none!important';
+        return;
+    }
+    empty.style.display = 'none';
+
+    grid.innerHTML = '';
+    _analyses.forEach(item => grid.insertAdjacentHTML('beforeend', buildCard(item)));
+
+    const hasMore = _analyses.length < _total;
+    lmWrap.style.cssText = hasMore ? '' : 'display:none!important';
+    if (hasMore) lmBtn.textContent = `Load more (${_total - _analyses.length} remaining)`;
+}
+
+// ── Card builder ─────────────────────────────────────────────────
+function buildCard(item) {
+    const r          = item.result || {};
+    const score      = r.match_score   ?? '?';
+    const rec        = (r.recommendation || '').toLowerCase();
+    const scoreClass = scoreColour(score);
+    const recClass   = recColour(rec);
+    const recLabel   = rec ? rec.charAt(0).toUpperCase() + rec.slice(1) : '—';
+
+    const have    = (r.skills_we_have    || []).slice(0, 4);
+    const missing = (r.skills_we_are_missing || []).slice(0, 3);
+    const reasoning = (r.score_reasoning || '').slice(0, 140);
+
+    const havePills    = have.map(s =>
+        `<span class="badge bg-success bg-opacity-25 text-success border border-success border-opacity-25">${escapeHtml(s)}</span>`
+    ).join('');
+    const missingPills = missing.map(s =>
+        `<span class="badge bg-danger bg-opacity-25 text-danger border border-danger border-opacity-25">${escapeHtml(s)}</span>`
+    ).join('');
+
+    const logoHtml = item.company_logo
+        ? `<img src="${escapeHtml(item.company_logo)}" class="rounded me-2 flex-shrink-0"
+               style="width:36px;height:36px;object-fit:contain;" onerror="this.style.display='none'">`
+        : '';
+
+    const redFlagBadge = (r.red_flags || []).length > 0
+        ? `<span class="badge bg-danger bg-opacity-75 ms-1" title="${escapeHtml((r.red_flags||[]).join('; '))}">
+               <i class="bi bi-flag-fill me-1"></i>${r.red_flags.length} flag${r.red_flags.length>1?'s':''}
+           </span>`
+        : '';
+
+    return `
+    <div class="col-12 col-md-6 col-xl-4">
+      <div class="card h-100 border-0 shadow-sm analysis-card"
+           style="cursor:pointer;" onclick="openAnalysis('${escapeHtml(item.analysis_id)}')">
+        <div class="card-body">
+
+          <!-- Score + rec row -->
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <div class="d-flex align-items-center gap-2">
+              <span class="badge ${scoreClass} rounded-circle d-flex align-items-center justify-content-center fw-bold"
+                    style="width:2.4rem;height:2.4rem;font-size:1rem;">${score}</span>
+              <span class="badge ${recClass} text-uppercase small">${recLabel}</span>
+              ${redFlagBadge}
+            </div>
+            <small class="text-muted">${fmtDate(item.analysed_at)}</small>
+          </div>
+
+          <!-- Title + company -->
+          <div class="d-flex align-items-start mb-1">
+            ${logoHtml}
+            <div class="min-w-0">
+              <div class="fw-semibold text-truncate">${escapeHtml(item.title || '—')}</div>
+              <div class="small text-muted text-truncate">${escapeHtml(item.company || '')}${item.location ? ' · ' + escapeHtml(item.location) : ''}</div>
+            </div>
+          </div>
+
+          <!-- Score reasoning excerpt -->
+          ${reasoning ? `<p class="small text-muted mt-2 mb-2" style="line-height:1.4;">${escapeHtml(reasoning)}${r.score_reasoning.length > 140 ? '…' : ''}</p>` : ''}
+
+          <!-- Skills pills -->
+          ${havePills    ? `<div class="d-flex flex-wrap gap-1 mb-1">${havePills}</div>` : ''}
+          ${missingPills ? `<div class="d-flex flex-wrap gap-1">${missingPills}</div>` : ''}
+
+        </div>
+        <div class="card-footer bg-transparent border-0 pt-0 pb-2 d-flex justify-content-between align-items-center">
+          <small class="text-muted font-monospace" style="font-size:.7rem;">${escapeHtml(item.analysis_model || '')}</small>
+          ${item.prompt_title ? `<small class="text-muted">${escapeHtml(item.prompt_title)}</small>` : ''}
+        </div>
+      </div>
+    </div>`;
+}
+
+// ── Open modal ───────────────────────────────────────────────────
+function openAnalysis(analysisId) {
+    const item = _analyses.find(a => String(a.analysis_id) === String(analysisId));
+    if (!item) return;
+    _currentItem = item;
+
+    const r   = item.result || {};
+    const rec = (r.recommendation || '').toLowerCase();
+
+    // Header
+    document.getElementById('amTitle').textContent = item.title || '—';
+    document.getElementById('amMeta').textContent  =
+        [item.company, item.location, item.analysed_at ? 'Analysed ' + fmtDate(item.analysed_at) : '']
+        .filter(Boolean).join(' · ');
+
+    const scoreBadge = document.getElementById('amScoreBadge');
+    scoreBadge.textContent  = (r.match_score ?? '?') + ' / 10';
+    scoreBadge.className    = `badge fs-6 fw-bold rounded-pill px-3 ${scoreColour(r.match_score)}`;
+
+    const recBadge = document.getElementById('amRecBadge');
+    recBadge.textContent = rec ? rec.toUpperCase() : '—';
+    recBadge.className   = `badge fs-6 rounded-pill px-3 ${recColour(rec)}`;
+
+    // Score reasoning
+    document.getElementById('amScoreReasoning').textContent = r.score_reasoning || '—';
+
+    // Skills
+    fillPills('amSkillsHave',    r.skills_we_have || [],          'success');
+    fillPills('amSkillsMissing', r.skills_we_are_missing || [],   'danger');
+
+    // Lists
+    fillList('amResponsibilities', r.key_responsibilities || []);
+    fillList('amCoverLetter',      r.cover_letter_talking_points || []);
+    fillList('amInterviewPrep',    r.interview_prep_topics || []);
+    fillList('amCompanyHighlights',r.company_highlights || []);
+
+    // Red flags
+    const flags = r.red_flags || [];
+    document.getElementById('amRedFlagsWrap').style.display = flags.length ? '' : 'none';
+    fillList('amRedFlags', flags);
+
+    // Application tip
+    document.getElementById('amApplicationTip').textContent = r.application_tips || '—';
+
+    // Role details
+    document.getElementById('amSeniority').textContent  = r.seniority_level            || '—';
+    document.getElementById('amExperience').textContent = r.years_experience_required   || '—';
+    document.getElementById('amSalary').textContent     = r.salary_indication           || '—';
+    document.getElementById('amRemote').textContent     = r.remote_classification       || '—';
+
+    // Company
+    document.getElementById('amCompanyType').textContent = r.company_type         || '—';
+    document.getElementById('amCompanySize').textContent = r.company_size_estimate || '—';
+
+    // Recommendation alert
+    const recAlert = document.getElementById('amRecAlert');
+    recAlert.className = `alert py-2 mb-0 alert-${rec === 'apply' ? 'success' : rec === 'maybe' ? 'warning' : 'secondary'}`;
+    document.getElementById('amRecLabel').textContent = rec ? rec.toUpperCase() : '';
+    document.getElementById('amRecNotes').textContent = r.recommendation_notes || '';
+
+    // Favourite / applied buttons
+    const favBtn     = document.getElementById('amFavBtn');
+    const appliedBtn = document.getElementById('amAppliedBtn');
+    favBtn.classList.toggle('active',       !!item.is_favourite);
+    favBtn.classList.toggle('btn-danger',   !!item.is_favourite);
+    favBtn.classList.toggle('btn-outline-danger', !item.is_favourite);
+    appliedBtn.classList.toggle('active',         !!item.is_applied);
+    appliedBtn.classList.toggle('btn-success',    !!item.is_applied);
+    appliedBtn.classList.toggle('btn-outline-success', !item.is_applied);
+
+    // Re-analyse button
+    document.getElementById('amAIBtn').onclick = () =>
+        AIQueue.trigger(item.job_id, item.title);
+
+    // View listing link
+    document.getElementById('amJobLink').href = item.url || '#';
+
+    // Job listing tab
+    const metaEl = document.getElementById('amJobMeta');
+    metaEl.innerHTML = [
+        item.job_type  ? `<span class="badge bg-secondary">${escapeHtml(item.job_type)}</span>`  : '',
+        item.remote    ? `<span class="badge bg-info text-dark">${escapeHtml(item.remote)}</span>` : '',
+        item.source    ? `<span class="badge bg-dark">${escapeHtml(item.source)}</span>`           : '',
+    ].join('');
+    document.getElementById('amJobDescription').textContent = item.job_description_raw || '(No description saved)';
+
+    // Reset to Analysis tab
+    document.querySelector('[data-bs-target="#amTabAnalysis"]').click();
+
+    new bootstrap.Modal(document.getElementById('analysisModal')).show();
+}
+
+// ── Fav / Applied toggles ────────────────────────────────────────
+async function amToggleFav() {
+    if (!_currentItem) return;
+    const jobId  = _currentItem.job_id;
+    const isFav  = !!_currentItem.is_favourite;
+    const method = isFav ? 'DELETE' : 'POST';
+    try {
+        await fetch(`/api/favourite/${jobId}`, { method });
+        _currentItem.is_favourite = !isFav;
+        // Sync in list
+        const idx = _analyses.findIndex(a => a.job_id === jobId);
+        if (idx !== -1) _analyses[idx].is_favourite = !isFav;
+        // Update button
+        const btn = document.getElementById('amFavBtn');
+        btn.classList.toggle('btn-danger',        !isFav);
+        btn.classList.toggle('btn-outline-danger', isFav);
+    } catch(e) { console.error(e); }
+}
+
+async function amToggleApplied() {
+    if (!_currentItem) return;
+    const jobId     = _currentItem.job_id;
+    const isApplied = !!_currentItem.is_applied;
+    const method    = isApplied ? 'DELETE' : 'POST';
+    try {
+        await fetch(`/api/applied/${jobId}`, { method });
+        _currentItem.is_applied = !isApplied;
+        const idx = _analyses.findIndex(a => a.job_id === jobId);
+        if (idx !== -1) _analyses[idx].is_applied = !isApplied;
+        const btn = document.getElementById('amAppliedBtn');
+        btn.classList.toggle('btn-success',         !isApplied);
+        btn.classList.toggle('btn-outline-success',  isApplied);
+    } catch(e) { console.error(e); }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────
+function updateSummary() {
+    const el = document.getElementById('resultsSummary');
+    el.textContent = `${_total.toLocaleString()} analysis result${_total !== 1 ? 's' : ''}`;
+}
+
+function fillPills(elId, items, colour) {
+    const el = document.getElementById(elId);
+    if (!items.length) {
+        el.innerHTML = `<span class="text-muted small fst-italic">None</span>`;
+        return;
+    }
+    el.innerHTML = items.map(s =>
+        `<span class="badge bg-${colour} bg-opacity-25 text-${colour} border border-${colour} border-opacity-25">${escapeHtml(String(s))}</span>`
+    ).join('');
+}
+
+function fillList(elId, items) {
+    const el = document.getElementById(elId);
+    if (!items.length) {
+        el.innerHTML = '<li class="text-muted fst-italic">None</li>';
+        return;
+    }
+    el.innerHTML = items.map(s => `<li>${escapeHtml(String(s))}</li>`).join('');
+}
+
+function scoreColour(score) {
+    const n = parseInt(score, 10);
+    if (n >= 8) return 'bg-success';
+    if (n >= 6) return 'bg-info text-dark';
+    if (n >= 4) return 'bg-warning text-dark';
+    return 'bg-danger';
+}
+
+function recColour(rec) {
+    if (rec === 'apply') return 'bg-success';
+    if (rec === 'maybe') return 'bg-warning text-dark';
+    return 'bg-secondary';
+}
+
+function fmtDate(dt) {
+    if (!dt) return '';
+    const d = new Date(dt.replace(' ', 'T'));
+    return isNaN(d) ? dt : d.toLocaleDateString(undefined, { day:'numeric', month:'short', year:'numeric' });
+}
+
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+<style>
+.analysis-card { transition: transform .15s, box-shadow .15s; }
+.analysis-card:hover { transform: translateY(-2px); box-shadow: 0 .5rem 1.5rem rgba(0,0,0,.35)!important; }
+</style>
+{% endblock %}

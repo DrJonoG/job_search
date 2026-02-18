@@ -17,6 +17,10 @@ CSV_PATH = DATA_DIR / "jobs.csv"
 # Error log file (WARNING and ERROR from all loggers are appended here)
 LOG_DIR = BASE_DIR / os.getenv("LOG_DIR", "logs")
 ERROR_LOG_FILE = LOG_DIR / os.getenv("ERROR_LOG_FILE", "error_log.txt")
+# Full LLM response log – every raw Ollama response is appended here for debugging
+LLM_LOG_FILE = LOG_DIR / os.getenv("LLM_LOG_FILE", "llm_responses.log")
+# Full LLM request log – the exact prompt sent to Ollama (system + user messages)
+LLM_REQUEST_LOG_FILE = LOG_DIR / os.getenv("LLM_REQUEST_LOG_FILE", "llm_requests.log")
 
 # Ensure data and log directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -70,6 +74,39 @@ JOBSPY_SITES_RAW = os.getenv("JOBSPY_SITES", "indeed,linkedin,glassdoor,zip_recr
 JOBSPY_SITES = [s.strip().lower() for s in JOBSPY_SITES_RAW.split(",") if s.strip()]
 if not JOBSPY_SITES:
     JOBSPY_SITES = ["indeed", "linkedin", "glassdoor", "zip_recruiter", "bayt", "naukri", "bdjobs"]
+
+# ── Ollama (local LLM) ─────────────────────────────────────────
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+# ── Open WebUI (optional unified LLM gateway) ──────────────────
+# Open WebUI proxies local Ollama models AND cloud providers (Gemini, etc.)
+# via a single OpenAI-compatible API. Set this URL if Open WebUI is running.
+# API key: create one at Settings → Account → API Keys inside Open WebUI.
+OPEN_WEBUI_BASE_URL = os.getenv("OPEN_WEBUI_BASE_URL", "http://localhost:8080")
+OPEN_WEBUI_API_KEY  = os.getenv("OPEN_WEBUI_API_KEY",  "")
+
+# ── Cloud / paid LLM providers (all optional) ──────────────────
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY",    "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+GOOGLE_AI_API_KEY = os.getenv("GOOGLE_AI_API_KEY", "")
+
+# Curated list of cloud models shown in the prompt-editor dropdown.
+# provider must match a key handled in _call_model() in app.py.
+CLOUD_MODELS: list[dict] = [
+    # ── OpenAI ──────────────────────────────────────────────────
+    {"id": "gpt-4o",          "provider": "openai",    "label": "GPT-4o"},
+    {"id": "gpt-4o-mini",     "provider": "openai",    "label": "GPT-4o mini"},
+    {"id": "o1",              "provider": "openai",    "label": "o1 (reasoning)"},
+    {"id": "o3-mini",         "provider": "openai",    "label": "o3-mini (reasoning)"},
+    # ── Anthropic ───────────────────────────────────────────────
+    {"id": "claude-3-5-sonnet-20241022", "provider": "anthropic", "label": "Claude 3.5 Sonnet"},
+    {"id": "claude-3-5-haiku-20241022",  "provider": "anthropic", "label": "Claude 3.5 Haiku"},
+    {"id": "claude-3-opus-20240229",     "provider": "anthropic", "label": "Claude 3 Opus"},
+    # ── Google ──────────────────────────────────────────────────
+    {"id": "gemini-2.0-flash",   "provider": "google", "label": "Gemini 2.0 Flash"},
+    {"id": "gemini-1.5-pro",     "provider": "google", "label": "Gemini 1.5 Pro"},
+    {"id": "gemini-1.5-flash",   "provider": "google", "label": "Gemini 1.5 Flash"},
+]
 
 # Search defaults (max jobs per source per search; UI can request up to 1000)
 MAX_RESULTS_PER_SOURCE = int(os.getenv("MAX_RESULTS_PER_SOURCE", "1000"))
