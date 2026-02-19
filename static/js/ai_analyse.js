@@ -283,12 +283,24 @@ const AIQueue = (() => {
     }
 
     // ── Prompt picker modal ─────────────────────────────────────
+
+    /** Show the picker for a single job. */
     function _showPicker(jobId, jobTitle, prompts) {
+        _showPickerWithCallback(jobTitle, prompts, p => {
+            enqueue(jobId, jobTitle, p.id, p.title, p.model);
+        });
+    }
+
+    /**
+     * Core picker renderer. Calls onSelect(prompt) when the user picks one.
+     * Used for both single-job and bulk-job flows.
+     */
+    function _showPickerWithCallback(displayTitle, prompts, onSelect) {
         const titleEl = document.getElementById('promptPickerJobTitle');
         const listEl  = document.getElementById('promptPickerList');
         if (!titleEl || !listEl) return;
 
-        titleEl.textContent = jobTitle;
+        titleEl.textContent = displayTitle;
         listEl.innerHTML = '';
 
         prompts.forEach(p => {
@@ -309,7 +321,7 @@ const AIQueue = (() => {
                     document.getElementById('promptPickerModal')
                 );
                 if (modal) modal.hide();
-                enqueue(jobId, jobTitle, p.id, p.title, p.model);
+                onSelect(p);
             });
 
             listEl.appendChild(btn);
@@ -322,6 +334,55 @@ const AIQueue = (() => {
             modal = new bootstrap.Modal(document.getElementById('promptPickerModal'));
         }
         modal.show();
+    }
+
+    // ── Public: bulk entry point ────────────────────────────────
+    /**
+     * Queue multiple jobs for AI analysis.
+     * jobs = [{jobId, jobTitle}, ...]
+     * If an active prompt exists it is used immediately; otherwise the picker
+     * is shown once and the chosen prompt is applied to all jobs.
+     */
+    async function triggerMultiple(jobs) {
+        if (!jobs || !jobs.length) return;
+
+        try {
+            const resp    = await fetch('/api/ai-prompts');
+            const data    = await resp.json();
+            const prompts = data.prompts || [];
+
+            if (prompts.length === 0) {
+                showToast(
+                    'No AI prompts configured. ' +
+                    '<a href="/ai-prompts" class="fw-bold" style="color:inherit;">Create one here →</a>',
+                    'warning'
+                );
+                return;
+            }
+
+            const active = prompts.find(
+                p => p.is_active == 1 || p.is_active === true || p.is_active === '1'
+            );
+
+            if (active) {
+                jobs.forEach(j => enqueue(j.jobId, j.jobTitle, active.id, active.title, active.model));
+                showToast(
+                    `<i class="bi bi-robot me-1"></i>Queued <strong>${jobs.length}</strong> job${jobs.length !== 1 ? 's' : ''} for AI analysis`,
+                    'info'
+                );
+            } else {
+                const label = `${jobs.length} selected job${jobs.length !== 1 ? 's' : ''}`;
+                _showPickerWithCallback(label, prompts, p => {
+                    jobs.forEach(j => enqueue(j.jobId, j.jobTitle, p.id, p.title, p.model));
+                    showToast(
+                        `<i class="bi bi-robot me-1"></i>Queued <strong>${jobs.length}</strong> job${jobs.length !== 1 ? 's' : ''} for AI analysis`,
+                        'info'
+                    );
+                });
+            }
+        } catch (err) {
+            showToast('Failed to load AI prompts: ' + err.message, 'danger');
+        }
     }
 
     // ── Navbar badge ────────────────────────────────────────────
@@ -363,5 +424,5 @@ const AIQueue = (() => {
     });
 
     // ── Public API ──────────────────────────────────────────────
-    return { trigger, enqueue, cancel, remove, reorderByIds, getState };
+    return { trigger, triggerMultiple, enqueue, cancel, remove, reorderByIds, getState };
 })();

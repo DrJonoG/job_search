@@ -563,6 +563,28 @@ a:hover {
     opacity: 0.45;
 }
 
+.job-card-selected {
+    border-color: rgba(var(--bs-info-rgb), 0.7) !important;
+    background: rgba(var(--bs-info-rgb), 0.06) !important;
+}
+
+.job-select-check {
+    cursor: pointer;
+    flex-shrink: 0;
+    width: 1.1rem;
+    height: 1.1rem;
+    margin-top: 2px;
+}
+
+/* Bulk action bar (fixed bottom-centre) */
+#bulkActionBar {
+    z-index: 1050;
+    bottom: 1.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    white-space: nowrap;
+}
+
 /* ── Salary Badge ──────────────────────────────────────────────── */
 .salary-badge {
     background: rgba(var(--bs-primary-rgb), 0.1);

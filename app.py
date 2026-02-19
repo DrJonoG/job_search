@@ -10,6 +10,9 @@ Routes:
   /ai-prompts           Manage AI analysis prompt configurations
   /api/search           POST – start a new search
   /api/search/<id>      GET  – poll search progress
+  /api/linkedin/setup              POST – open headed browser for LinkedIn login
+  /api/linkedin/setup/<id>         GET  – poll LinkedIn login setup status
+  /api/linkedin/setup/<id>/complete POST – signal browser to close and save session
   /api/jobs             GET  – query saved jobs (JSON)
   /api/jobs/<id>        GET  – single job detail (JSON)
   /api/jobs/statuses    POST – bulk favourite/applied status
@@ -36,7 +39,9 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
+import uuid as _uuid
 
 import re
 import urllib.request
@@ -617,6 +622,7 @@ def index():
         experience_levels=config.EXPERIENCE_LEVELS,
         job_types=config.JOB_TYPES,
         remote_options=config.REMOTE_OPTIONS,
+        linkedin_browser_enabled=config.LINKEDIN_DIRECT_USE_BROWSER,
     )
 
 
@@ -751,6 +757,97 @@ def api_search_cancel(task_id):
     if not manager.cancel_search(task_id):
         return jsonify({"error": "Task not found or not running"}), 400
     return jsonify({"status": "cancellation requested"})
+
+
+# ── LinkedIn browser login setup ────────────────────────────────────────────
+
+_linkedin_setup_tasks: dict = {}
+
+
+@app.route("/api/linkedin/setup", methods=["POST"])
+def api_linkedin_setup():
+    """Open a headed browser so the user can log in to LinkedIn once.
+    The session is persisted to LINKEDIN_DIRECT_BROWSER_PROFILE so subsequent
+    searches run headless. The browser stays open until the user clicks
+    'Continue' (which calls /api/linkedin/setup/<id>/complete) or times out."""
+    if not config.LINKEDIN_DIRECT_USE_BROWSER:
+        return jsonify({
+            "error": "LinkedIn browser mode is not enabled. Set LINKEDIN_DIRECT_USE_BROWSER=true in .env and restart the app."
+        }), 400
+
+    try:
+        import playwright.sync_api  # noqa: F401
+    except ImportError:
+        return jsonify({
+            "error": "Playwright is not installed. Run: pip install playwright && playwright install chromium"
+        }), 400
+
+    task_id = _uuid.uuid4().hex
+    done_event = threading.Event()
+    _linkedin_setup_tasks[task_id] = {
+        "status": "waiting",
+        "started_at": time.time(),
+        "message": "Browser is open – log in to LinkedIn then click Continue.",
+        "_event": done_event,
+    }
+
+    def _run():
+        from pathlib import Path
+        from playwright.sync_api import sync_playwright
+        profile_path = Path(config.LINKEDIN_DIRECT_BROWSER_PROFILE).resolve()
+        profile_path.mkdir(parents=True, exist_ok=True)
+        try:
+            with sync_playwright() as p:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_path),
+                    headless=False,
+                )
+                page = context.new_page()
+                try:
+                    page.goto("https://www.linkedin.com", wait_until="domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
+                logger.info("[LinkedIn Setup] Browser open, waiting for user to click Continue…")
+                # Wait until the user signals done (max 10 min safety timeout)
+                done_event.wait(timeout=600)
+                context.close()
+            _linkedin_setup_tasks[task_id]["status"] = "done"
+            _linkedin_setup_tasks[task_id]["message"] = (
+                "Session saved. LinkedIn (Direct) will now use your logged-in session for future searches."
+            )
+        except Exception as exc:
+            _linkedin_setup_tasks[task_id]["status"] = "error"
+            _linkedin_setup_tasks[task_id]["message"] = str(exc)
+            logger.warning("[LinkedIn Setup] Error: %s", exc)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"task_id": task_id, "status": "waiting"})
+
+
+@app.route("/api/linkedin/setup/<task_id>")
+def api_linkedin_setup_status(task_id):
+    """Poll LinkedIn login setup task status."""
+    task = _linkedin_setup_tasks.get(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify({
+        "status": task["status"],
+        "message": task["message"],
+    })
+
+
+@app.route("/api/linkedin/setup/<task_id>/complete", methods=["POST"])
+def api_linkedin_setup_complete(task_id):
+    """Signal the LinkedIn setup browser to close and save the session."""
+    task = _linkedin_setup_tasks.get(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    if task["status"] != "waiting":
+        return jsonify({"error": "Task is not in a waiting state"}), 400
+    task["status"] = "closing"
+    task["message"] = "Saving session and closing browser…"
+    task["_event"].set()
+    return jsonify({"status": "closing"})
 
 
 @app.route("/api/jobs")

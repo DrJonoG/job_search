@@ -73,6 +73,7 @@ class JobDataSource(BaseSource):
         experience_level: str = "",
         max_results: int = 100,
         posted_in_last_days: Optional[int] = None,
+        **kwargs,
     ) -> List[Job]:
         api_key = getattr(config, "JOBDATA_API_KEY", "") or ""
         keywords_list = normalize_keywords(keywords, default=["developer"])

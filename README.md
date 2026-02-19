@@ -83,6 +83,7 @@ Built with Python, Flask, and MySQL. Runs locally on Windows, macOS, or Linux.
   - **Model**, choose from locally installed Ollama models, models available through Open WebUI (e.g. Gemini), or direct cloud APIs (OpenAI, Anthropic, Google)
 - Analysis results are stored in `ai_analyses` and linked to both the prompt and the job, re-run with a different model or prompt without losing previous results
 - Each analysis returns: keywords, key skills, job description, key responsibilities, match score (1–10) with reasoning, skills matched/missing, cover letter talking points, red flags, interview prep topics, application tips, company type/size/highlights, and a recommendation (apply / maybe / skip)
+- **Bulk analysis**: select multiple jobs on the job board, favourites, or applied pages using the checkbox on each card, then click **AI Analyse selected** in the action bar that appears — all jobs are queued in one step using the active prompt (or the prompt picker if no default is set)
 
 ### Saved Searches
 - **Save any search configuration**, keywords, location, remote, job type, experience level, salary, sources, results cap, and posted-in-last filter
@@ -257,6 +258,8 @@ pip install playwright
 playwright install chromium
 ```
 
+Then set `LINKEDIN_DIRECT_USE_BROWSER=true` in `.env` and restart the app. On the **Search** page, click **Setup LinkedIn Login** to open a browser window, log in, then click **Continue** to save the session and close the browser. No further `.env` changes are needed after that.
+
 ### Step 7: Configure environment variables
 
 ```bash
@@ -384,7 +387,7 @@ To generate an Open WebUI API key: **Profile icon** → **Settings** → **Accou
 | **Google 429 (rate limit)** | JobSpy's Google scraping is often rate-limited. The default `JOBSPY_SITES` omits `google`. Add it in `.env` if you want it (expect occasional 429 errors). |
 | **JobSpy + LinkedIn** | If both are selected, only JobSpy runs for LinkedIn to avoid a duplicate scrape. |
 | **LinkedIn (Direct)** | Uses LinkedIn's jobs-guest API (no JS needed). Time filter: past 24h (`f_TPR=r86400`), past week (`r604800`), past month (`r2592000`). Remote = `f_WT=2`. When no location is set, uses `LINKEDIN_DIRECT_LOCATIONS` from `.env`. |
-| **LinkedIn browser mode** | Set `LINKEDIN_DIRECT_USE_BROWSER=true` to open the real LinkedIn page in Playwright. Log in once and the session is saved. Extracts full descriptions, salary, job type, remote status, and company logos. Set `LINKEDIN_DIRECT_BROWSER_HEADED=true` to see the browser window. |
+| **LinkedIn browser mode** | Set `LINKEDIN_DIRECT_USE_BROWSER=true` to open the real LinkedIn page in Playwright. Log in once and the session is saved. Extracts full descriptions, salary, job type, remote status, and company logos. Click **Setup LinkedIn Login** on the Search page to open the browser and log in — no further `.env` edits needed. |
 | **JobData API** | Without `JOBDATA_API_KEY` you get ~10 requests/hour (testing). Set the key in `.env` for normal use. Rate limit tracked in `logs/jobdata_ratelimit.json`. |
 | **Lever / Ashby / Workable** | Like Greenhouse, these ATS adapters hit public JSON endpoints for a curated list of company boards. Override the default lists with `LEVER_BOARD_TOKENS`, `ASHBY_BOARD_TOKENS`, or `WORKABLE_BOARD_TOKENS` in `.env`. |
 | **JobsCollider** | Remote jobs only. Free API, no key needed. Must credit JobsCollider as the source (handled automatically via the `source` field). |
@@ -462,7 +465,7 @@ job_search/
     │   └── style.css                   # Custom styles (IBM Plex Mono, dark/light, green accent)
     └── js/
         ├── app.js                      # Frontend logic (search, filters, modal, fav/applied)
-        └── ai_analyse.js               # AI analysis queue, prompt picker, toast notifications
+        └── ai_analyse.js               # AI analysis queue (single + bulk), prompt picker, toast notifications
 ```
 
 ---
@@ -607,6 +610,9 @@ Unique constraint on `(job_id, prompt_id)`, one analysis result per job per prom
 | `POST` | `/api/search` | Start a new background search |
 | `GET` | `/api/search/<id>` | Poll search task progress |
 | `POST` | `/api/search/<id>/cancel` | Cancel a running search |
+| `POST` | `/api/linkedin/setup` | Open headed browser for LinkedIn login (browser mode only) |
+| `GET` | `/api/linkedin/setup/<id>` | Poll LinkedIn login setup task status |
+| `POST` | `/api/linkedin/setup/<id>/complete` | Signal the browser to close and save the session |
 | `GET` | `/api/jobs` | Query saved jobs (supports filters + pagination) |
 | `GET` | `/api/jobs/<id>` | Get single job detail (includes fav/applied status) |
 | `POST` | `/api/jobs/statuses` | Bulk check favourite/applied status for job IDs |

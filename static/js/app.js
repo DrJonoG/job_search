@@ -8,6 +8,9 @@ let _currentModalFav = false;
 let _currentModalApplied = false;
 let _currentModalNotInterested = false;
 
+// ── Multi-select state ────────────────────────────────────────
+const _selectedJobIds = new Set();
+
 // ── Search overlay: current task id and abort flag for cancel ──
 let _searchTaskId = null;
 let _searchPollAborted = false;
@@ -391,6 +394,7 @@ async function loadJobs(page = 1) {
 
     if (!listEl) return;
 
+    clearJobSelection();
     listEl.innerHTML = '';
     loadingEl.style.display = 'block';
     emptyEl.style.display = 'none';
@@ -503,6 +507,10 @@ function renderJobCard(job, idx, isFav = false, isApplied = false, isNotInterest
                 <div class="job-company">${escapeHtml(job.company)}</div>
             </div>
             <div class="d-flex align-items-center gap-2">
+                <input type="checkbox" class="job-select-check form-check-input"
+                       id="sel-${job.job_id}"
+                       title="Select for bulk AI analysis"
+                       onclick="event.stopPropagation(); toggleJobSelection('${job.job_id}', this)">
                 <button class="action-btn ni-btn ${niClass}" onclick="toggleNotInterested('${job.job_id}', this)"
                         title="${isNotInterested ? 'Remove not interested' : 'Mark as not interested'}">
                     <i class="bi ${niIcon}"></i>
@@ -528,6 +536,61 @@ function renderJobCard(job, idx, isFav = false, isApplied = false, isNotInterest
         ${desc ? `<div class="job-description-preview" onclick="showJobDetail('${job.job_id}')" style="cursor:pointer">${escapeHtml(desc)}</div>` : ''}
         ${tags.length > 0 ? `<div class="job-tags">${tags.map(t => `<span class="job-tag">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
     </div>`;
+}
+
+// ── Multi-select helpers ──────────────────────────────────────
+
+function _updateSelectionBar() {
+    const bar = document.getElementById('bulkActionBar');
+    if (!bar) return;
+    const count = _selectedJobIds.size;
+    const countEl = document.getElementById('bulkSelCount');
+    if (countEl) countEl.textContent = `${count} job${count !== 1 ? 's' : ''} selected`;
+    bar.classList.toggle('d-none', count === 0);
+}
+
+function toggleJobSelection(jobId, checkbox) {
+    const id = String(jobId);
+    if (checkbox.checked) {
+        _selectedJobIds.add(id);
+        document.getElementById(`card-${id}`)?.classList.add('job-card-selected');
+    } else {
+        _selectedJobIds.delete(id);
+        document.getElementById(`card-${id}`)?.classList.remove('job-card-selected');
+    }
+    _updateSelectionBar();
+}
+
+function selectAllVisibleJobs() {
+    document.querySelectorAll('.job-select-check').forEach(cb => {
+        const id = cb.id.replace('sel-', '');
+        if (!id) return;
+        cb.checked = true;
+        _selectedJobIds.add(id);
+        document.getElementById(`card-${id}`)?.classList.add('job-card-selected');
+    });
+    _updateSelectionBar();
+}
+
+function clearJobSelection() {
+    _selectedJobIds.clear();
+    document.querySelectorAll('.job-select-check').forEach(cb => { cb.checked = false; });
+    document.querySelectorAll('.job-card-selected').forEach(card => card.classList.remove('job-card-selected'));
+    _updateSelectionBar();
+}
+
+async function analyseSelectedJobs() {
+    if (_selectedJobIds.size === 0) return;
+
+    const jobs = [..._selectedJobIds].map(jobId => {
+        const cardEl = document.getElementById(`card-${jobId}`);
+        const title  = cardEl?.querySelector('.job-title')?.textContent?.trim() || jobId;
+        return { jobId, jobTitle: title };
+    });
+
+    // Clear immediately so the bar hides and won't be triggered twice
+    clearJobSelection();
+    await AIQueue.triggerMultiple(jobs);
 }
 
 function renderPagination(pagination) {
@@ -909,6 +972,7 @@ async function loadFavourites() {
 
     if (!listEl) return;
 
+    clearJobSelection();
     try {
         const resp = await fetch('/api/favourites');
         const data = await resp.json();
@@ -940,6 +1004,7 @@ async function loadApplications() {
 
     if (!listEl) return;
 
+    clearJobSelection();
     try {
         const resp = await fetch('/api/applications');
         const data = await resp.json();

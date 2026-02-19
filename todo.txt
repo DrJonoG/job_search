@@ -1,0 +1,2 @@
+Go through all job sources, one by one, and confirm. Need to login for indeed
+Ensure that I can search things like python machine learning engineer and it will search for all of those terms in the text. 

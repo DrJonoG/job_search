@@ -209,6 +209,25 @@
                         <div class="form-text mt-2" id="sourcesCount">Select at least one source to enable search.</div>
                     </div>
 
+                    {% if linkedin_browser_enabled %}
+                    <!-- LinkedIn browser mode setup notice -->
+                    <div class="mt-3 p-3 rounded border border-opacity-25 d-flex align-items-center justify-content-between gap-3"
+                         style="border-color:rgba(var(--bs-info-rgb),.35)!important; background:rgba(var(--bs-info-rgb),.07);">
+                        <div>
+                            <div class="fw-semibold small" style="color:var(--bs-info);">
+                                <i class="bi bi-linkedin me-1"></i>LinkedIn Browser Mode Active
+                            </div>
+                            <div class="text-muted" style="font-size:0.78rem;">
+                                Run the setup once to log in and save your session for future searches.
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-info flex-shrink-0"
+                                onclick="openLinkedInSetup()">
+                            <i class="bi bi-box-arrow-in-right me-1"></i>Setup LinkedIn Login
+                        </button>
+                    </div>
+                    {% endif %}
+
                     <!-- Submit -->
                     <div class="mt-4 d-flex flex-wrap gap-2">
                         <button type="submit" class="btn btn-search btn-lg px-4" id="searchBtn" disabled>
@@ -286,4 +305,153 @@
         </div>
     </div>
 </div>
+
+{% if linkedin_browser_enabled %}
+<!-- LinkedIn Login Setup Modal -->
+<div class="modal fade" id="linkedinSetupModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title fw-bold">
+                    <i class="bi bi-linkedin me-2" style="color:var(--bs-info);"></i>LinkedIn Login Setup
+                </h5>
+                <button type="button" class="btn-close" id="linkedinSetupDismiss"></button>
+            </div>
+            <div class="modal-body pt-3" id="linkedinSetupBody">
+                <div class="text-center py-3">
+                    <div class="spinner-border text-info mb-3" role="status" aria-hidden="true"></div>
+                    <p class="mb-0">Opening LinkedIn in your browser&hellip;</p>
+                </div>
+            </div>
+            <div class="modal-footer border-0" id="linkedinSetupFooter">
+                <button type="button" class="btn btn-secondary" id="linkedinSetupCancel">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+{% if linkedin_browser_enabled %}
+<script>
+(function () {
+    let _liTaskId   = null;
+    let _liInterval = null;
+    let _liModal    = null;
+
+    function _getModal() {
+        if (!_liModal) _liModal = new bootstrap.Modal(document.getElementById('linkedinSetupModal'));
+        return _liModal;
+    }
+
+    function _setBody(html)   { document.getElementById('linkedinSetupBody').innerHTML   = html; }
+    function _setFooter(html) { document.getElementById('linkedinSetupFooter').innerHTML = html; }
+
+    function _stopPolling() {
+        if (_liInterval) { clearInterval(_liInterval); _liInterval = null; }
+    }
+
+    function _dismissModal() {
+        _stopPolling();
+        _getModal().hide();
+    }
+
+    document.getElementById('linkedinSetupDismiss').addEventListener('click', _dismissModal);
+    document.getElementById('linkedinSetupCancel').addEventListener('click',  _dismissModal);
+
+    function _showWaiting() {
+        _setBody(`
+            <p class="mb-3">
+                A browser window has opened on LinkedIn. <strong>Log in</strong>, then click
+                <strong>Continue</strong> below to save your session and close the browser.
+            </p>
+            <p class="small text-muted mb-0">
+                <i class="bi bi-info-circle me-1"></i>
+                Already logged in? Just click Continue.
+            </p>`);
+        _setFooter(`
+            <button type="button" class="btn btn-secondary" id="liCancelBtn">Cancel</button>
+            <button type="button" class="btn btn-primary" id="liContinueBtn">
+                <i class="bi bi-check-lg me-1"></i>Continue
+            </button>`);
+        document.getElementById('liCancelBtn').addEventListener('click', _dismissModal);
+        document.getElementById('liContinueBtn').addEventListener('click', _continue);
+    }
+
+    function _continue() {
+        if (!_liTaskId) return;
+        _setFooter('<button type="button" class="btn btn-secondary" disabled>Cancel</button>');
+        _setBody(`
+            <div class="text-center py-3">
+                <div class="spinner-border text-info mb-3" role="status" aria-hidden="true"></div>
+                <p class="mb-0">Saving session and closing browser&hellip;</p>
+            </div>`);
+        fetch('/api/linkedin/setup/' + _liTaskId + '/complete', { method: 'POST' })
+            .then(() => {
+                _liInterval = setInterval(_poll, 800);
+            })
+            .catch(err => {
+                _setBody(`<div class="alert alert-danger mb-0">Request failed: ${err}</div>`);
+                _setFooter('<button type="button" class="btn btn-secondary" id="liErrClose">Close</button>');
+                document.getElementById('liErrClose').addEventListener('click', _dismissModal);
+            });
+    }
+
+    function _poll() {
+        if (!_liTaskId) return;
+        fetch('/api/linkedin/setup/' + _liTaskId)
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'done') {
+                    _stopPolling();
+                    _setBody(`
+                        <div class="text-center py-2">
+                            <i class="bi bi-check-circle-fill text-success" style="font-size:2.5rem;"></i>
+                            <p class="mt-3 mb-0">${data.message}</p>
+                        </div>`);
+                    _setFooter('<button type="button" class="btn btn-primary" id="liDoneBtn">Done</button>');
+                    document.getElementById('liDoneBtn').addEventListener('click', _dismissModal);
+                } else if (data.status === 'error') {
+                    _stopPolling();
+                    _setBody(`<div class="alert alert-danger mb-0">Setup failed: ${data.message}</div>`);
+                    _setFooter('<button type="button" class="btn btn-secondary" id="liErrBtn">Close</button>');
+                    document.getElementById('liErrBtn').addEventListener('click', _dismissModal);
+                }
+                // 'closing' state: keep polling until done/error
+            })
+            .catch(() => {/* ignore transient fetch errors */});
+    }
+
+    window.openLinkedInSetup = function () {
+        _stopPolling();
+        _liTaskId = null;
+        _setBody(`
+            <div class="text-center py-3">
+                <div class="spinner-border text-info mb-3" role="status" aria-hidden="true"></div>
+                <p class="mb-0">Opening LinkedIn in your browser&hellip;</p>
+            </div>`);
+        _setFooter('<button type="button" class="btn btn-secondary" id="liStartCancelBtn">Cancel</button>');
+        document.getElementById('liStartCancelBtn').addEventListener('click', _dismissModal);
+        _getModal().show();
+
+        fetch('/api/linkedin/setup', { method: 'POST' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    _setBody(`<div class="alert alert-danger mb-0">${data.error}</div>`);
+                    _setFooter('<button type="button" class="btn btn-secondary" id="liErrStartClose">Close</button>');
+                    document.getElementById('liErrStartClose').addEventListener('click', _dismissModal);
+                    return;
+                }
+                _liTaskId = data.task_id;
+                _showWaiting();
+            })
+            .catch(err => {
+                _setBody(`<div class="alert alert-danger mb-0">Request failed: ${err}</div>`);
+            });
+    };
+})();
+</script>
+{% endif %}
 {% endblock %}

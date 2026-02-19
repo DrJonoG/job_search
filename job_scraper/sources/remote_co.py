@@ -32,6 +32,7 @@ class RemoteCoSource(BaseSource):
         experience_level: str = "",
         max_results: int = 100,
         posted_in_last_days: Optional[int] = None,
+        **kwargs,
     ) -> List[Job]:
         if remote == "On-site":
             return []

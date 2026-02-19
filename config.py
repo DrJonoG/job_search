@@ -130,13 +130,7 @@ LINKEDIN_DIRECT_CARD_DELAY = float(os.getenv("LINKEDIN_DIRECT_CARD_DELAY", "1.0"
 
 # Default job title keywords
 DEFAULT_KEYWORDS = [
-    "data analyst",
-    "data scientist",
-    "machine learning",
-    "software engineer",
-    "data engineer",
-    "python developer",
-    "AI engineer",
+    "machine learning"
 ]
 
 # Experience levels

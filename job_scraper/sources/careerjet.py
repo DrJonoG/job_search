@@ -35,6 +35,7 @@ class CareerJetSource(BaseSource):
         experience_level: str = "",
         max_results: int = 100,
         posted_in_last_days: Optional[int] = None,
+        **kwargs,
     ) -> List[Job]:
         affid = getattr(config, "CAREERJET_AFFID", "") or getattr(config, "CAREERJET_API_KEY", "")
         if not affid:

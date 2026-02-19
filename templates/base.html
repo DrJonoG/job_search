@@ -156,6 +156,24 @@
         </div>
     </div>
 
+    <!-- Bulk AI analysis action bar (appears when ≥1 job is selected) -->
+    <div id="bulkActionBar" class="position-fixed d-none" role="toolbar" aria-label="Bulk AI analysis">
+        <div class="d-flex align-items-center gap-3 rounded-3 px-4 py-3 shadow-lg border"
+             style="background:var(--card-bg); border-color:rgba(var(--bs-info-rgb),.45)!important;">
+            <span class="fw-semibold text-info" id="bulkSelCount" style="min-width:6rem;">0 selected</span>
+            <div class="vr"></div>
+            <button class="btn btn-sm btn-outline-secondary" onclick="selectAllVisibleJobs()" title="Select all visible jobs">
+                <i class="bi bi-check2-all me-1"></i>Select all
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="clearJobSelection()" title="Clear selection">
+                <i class="bi bi-x-lg me-1"></i>Clear
+            </button>
+            <button class="btn btn-sm btn-info" onclick="analyseSelectedJobs()" title="Queue selected jobs for AI analysis">
+                <i class="bi bi-robot me-1"></i>AI Analyse selected
+            </button>
+        </div>
+    </div>
+
     <!-- Toast container -->
     <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toastContainer"></div>
 
