@@ -141,3 +141,10 @@ JOB_TYPES = ["Full-time", "Part-time", "Contract", "Internship", "Freelance"]
 
 # Remote options
 REMOTE_OPTIONS = ["Any", "Remote", "On-site", "Hybrid"]
+
+
+# Resume Matcher integration
+RESUME_MATCHER_URL = os.getenv(
+    "RESUME_MATCHER_URL",
+    "",
+).rstrip("/")

@@ -152,6 +152,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const filterNI = document.getElementById('filterIncludeNotInterested');
     if (filterNI) filterNI.addEventListener('change', () => loadJobs(1));
+
+    const filterFav = document.getElementById('filterIncludeFavourites');
+    if (filterFav) filterFav.addEventListener('change', () => loadJobs(1));
+
+    const filterApplied = document.getElementById('filterIncludeApplied');
+    if (filterApplied) filterApplied.addEventListener('change', () => loadJobs(1));
+
+    const filterMatchMin = document.getElementById('filterMatchMin');
+    if (filterMatchMin) filterMatchMin.addEventListener('change', () => loadJobs(1));
+
+    const filterMatchPrompt = document.getElementById('filterMatchPrompt');
+    if (filterMatchPrompt) {
+        filterMatchPrompt.addEventListener('change', () => {
+            updateResumeScoreButton();
+            loadJobs(1);
+        });
+    }
+
+    loadResumeMatchPrompts();
 });
 
 function updateThemeIcon(theme) {
@@ -385,6 +404,167 @@ async function refreshStats() {
     } catch (e) { /* silent */ }
 }
 
+function updateResumeScoreButton() {
+    const promptEl = document.getElementById('filterMatchPrompt');
+    const btn = document.getElementById('scoreMatchProfileBtn');
+
+    if (!btn) return;
+
+    btn.disabled = !promptEl?.value;
+}
+
+
+async function scoreSelectedResumeProfile() {
+    const promptEl = document.getElementById('filterMatchPrompt');
+    const btn = document.getElementById('scoreMatchProfileBtn');
+
+    const promptId = promptEl?.value || '';
+
+    if (!promptId) {
+        alert('Select a Resume / Profile first.');
+        return;
+    }
+
+    const selectedText =
+        promptEl.options[promptEl.selectedIndex]?.textContent?.trim()
+        || `Prompt ${promptId}`;
+
+    const originalHtml = btn?.innerHTML;
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML =
+            '<span class="spinner-border spinner-border-sm me-2" ' +
+            'role="status"></span>Scoring...';
+    }
+
+    try {
+        const resp = await fetch(
+            `/api/resume-match/${encodeURIComponent(promptId)}`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            }
+        );
+
+        const data = await resp.json();
+
+        if (!resp.ok) {
+            throw new Error(
+                data.error || `HTTP ${resp.status}`
+            );
+        }
+
+        console.log(
+            `Resume matching completed for ${selectedText}`,
+            data.summary || []
+        );
+
+        // Refresh the current Job Board using the newly generated scores.
+        await loadJobs(1);
+
+        if (btn) {
+            btn.innerHTML =
+                '<i class="bi bi-check-circle me-1"></i>Scored';
+        }
+
+        setTimeout(() => {
+            if (btn) {
+                btn.innerHTML =
+                    '<i class="bi bi-stars me-1"></i>' +
+                    'Score / Re-score Profile';
+                updateResumeScoreButton();
+            }
+        }, 1800);
+
+    } catch (err) {
+        console.error('Resume scoring failed:', err);
+
+        alert(
+            `Resume scoring failed:\n\n${err.message}`
+        );
+
+        if (btn) {
+            btn.innerHTML =
+                '<i class="bi bi-stars me-1"></i>' +
+                'Score / Re-score Profile';
+        }
+
+        updateResumeScoreButton();
+
+    } finally {
+        if (btn && btn.innerHTML === originalHtml) {
+            updateResumeScoreButton();
+        }
+    }
+}
+
+
+async function loadResumeMatchPrompts() {
+    const el = document.getElementById('filterMatchPrompt');
+    if (!el) return;
+
+    const previousValue = el.value;
+
+    try {
+        const resp = await fetch('/api/ai-prompts');
+
+        if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+        }
+
+        const data = await resp.json();
+        const prompts = data.prompts || [];
+
+        el.innerHTML = '<option value="">No resume matching</option>';
+
+        let activeId = '';
+
+        prompts.forEach(prompt => {
+            const option = document.createElement('option');
+            option.value = String(prompt.id);
+
+            const active = !!prompt.is_active;
+
+            option.textContent =
+                `${prompt.title || `Prompt ${prompt.id}`}${active ? ' (Active)' : ''}`;
+
+            el.appendChild(option);
+
+            if (active) {
+                activeId = String(prompt.id);
+            }
+        });
+
+        el.dataset.activePromptId = activeId;
+
+        if (
+            previousValue &&
+            prompts.some(p => String(p.id) === String(previousValue))
+        ) {
+            el.value = previousValue;
+        } else if (activeId) {
+            el.value = activeId;
+        } else {
+            el.value = '';
+        }
+
+        updateResumeScoreButton();
+
+        // Initial page load may already have happened before the
+        // prompt list was available. Reload with the selected CV.
+        loadJobs(1);
+
+    } catch (err) {
+        console.warn('Unable to load resume profiles:', err);
+        el.innerHTML = '<option value="">No resume matching</option>';
+        updateResumeScoreButton();
+    }
+}
+
+
 // ── Job Board ─────────────────────────────────────────────────
 async function loadJobs(page = 1) {
     const listEl = document.getElementById('jobsList');
@@ -427,6 +607,18 @@ async function loadJobs(page = 1) {
 
     const includeNI = document.getElementById('filterIncludeNotInterested')?.checked;
     if (includeNI) params.set('include_not_interested', '1');
+
+    const includeFav = document.getElementById('filterIncludeFavourites')?.checked;
+    if (includeFav) params.set('include_favourites', '1');
+
+    const includeApplied = document.getElementById('filterIncludeApplied')?.checked;
+    if (includeApplied) params.set('include_applied', '1');
+
+    const matchPromptId = document.getElementById('filterMatchPrompt')?.value || '';
+    if (matchPromptId) params.set('match_prompt_id', matchPromptId);
+
+    const matchMin = document.getElementById('filterMatchMin')?.value || '';
+    if (matchMin) params.set('match_min', matchMin);
 
     const sortBy = document.getElementById('filterSort')?.value || 'date_posted';
     params.set('sort_by', sortBy);
@@ -499,6 +691,16 @@ function renderJobCard(job, idx, isFav = false, isApplied = false, isNotInterest
     const niClass = isNotInterested ? 'active' : '';
     const niIcon = isNotInterested ? 'bi-eye-slash-fill' : 'bi-eye-slash';
 
+    const rawMatch = job.resume_match_score;
+    const matchScore =
+        rawMatch === null || rawMatch === undefined || rawMatch === ''
+            ? null
+            : Number(rawMatch);
+
+    const matchBadge = Number.isFinite(matchScore)
+        ? `<span class="badge text-bg-primary"><i class="bi bi-stars me-1"></i>${matchScore.toFixed(1)}% Match</span>`
+        : '';
+
     return `
     <div class="job-card fade-in${isNotInterested ? ' job-card-dimmed' : ''}" style="animation-delay: ${idx * 0.03}s" id="card-${job.job_id}">
         <div class="d-flex justify-content-between align-items-start">
@@ -526,6 +728,7 @@ function renderJobCard(job, idx, isFav = false, isApplied = false, isNotInterest
             </div>
         </div>
         <div class="job-meta" onclick="showJobDetail('${job.job_id}')" style="cursor:pointer">
+            ${matchBadge}
             <span><i class="bi bi-geo-alt"></i>${escapeHtml(job.location || 'Not specified')}</span>
             <span class="badge ${remoteClass}">${escapeHtml(job.remote || 'Unknown')}</span>
             ${job.job_type ? `<span><i class="bi bi-clock"></i>${escapeHtml(job.job_type)}</span>` : ''}
@@ -1049,6 +1252,21 @@ function clearFilters() {
     document.getElementById('filterOrder').value = 'desc';
     const niCheckbox = document.getElementById('filterIncludeNotInterested');
     if (niCheckbox) niCheckbox.checked = false;
+    const favCheckbox = document.getElementById('filterIncludeFavourites');
+    if (favCheckbox) favCheckbox.checked = false;
+
+    const appliedCheckbox = document.getElementById('filterIncludeApplied');
+    if (appliedCheckbox) appliedCheckbox.checked = false;
+
+    const matchMinEl = document.getElementById('filterMatchMin');
+    if (matchMinEl) matchMinEl.value = '';
+
+    const matchPromptEl = document.getElementById('filterMatchPrompt');
+    if (matchPromptEl) {
+        matchPromptEl.value =
+            matchPromptEl.dataset.activePromptId || '';
+    }
+
     loadJobs(1);
 }
 
@@ -1298,6 +1516,10 @@ function gatherBoardFilterParams() {
         posted_in_last_days: document.getElementById('filterPostedInLastDays')?.value || '',
         region: document.getElementById('filterRegion')?.value || '',
         include_not_interested: document.getElementById('filterIncludeNotInterested')?.checked || false,
+        include_favourites: document.getElementById('filterIncludeFavourites')?.checked || false,
+        include_applied: document.getElementById('filterIncludeApplied')?.checked || false,
+        match_prompt_id: document.getElementById('filterMatchPrompt')?.value || '',
+        match_min: document.getElementById('filterMatchMin')?.value || '',
         sort_by: document.getElementById('filterSort')?.value || 'date_posted',
         order: document.getElementById('filterOrder')?.value || 'desc',
     };
@@ -1330,6 +1552,20 @@ function applyBoardFilterParams(params) {
 
     const niEl = document.getElementById('filterIncludeNotInterested');
     if (niEl) niEl.checked = !!params.include_not_interested;
+
+    const favEl = document.getElementById('filterIncludeFavourites');
+    if (favEl) favEl.checked = !!params.include_favourites;
+
+    const appliedEl = document.getElementById('filterIncludeApplied');
+    if (appliedEl) appliedEl.checked = !!params.include_applied;
+
+    const matchPromptEl = document.getElementById('filterMatchPrompt');
+    if (matchPromptEl && params.match_prompt_id !== undefined) {
+        matchPromptEl.value = String(params.match_prompt_id || '');
+    }
+
+    const matchMinEl = document.getElementById('filterMatchMin');
+    if (matchMinEl) matchMinEl.value = params.match_min || '';
 
     const sortEl = document.getElementById('filterSort');
     if (sortEl) sortEl.value = params.sort_by || 'date_posted';

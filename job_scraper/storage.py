@@ -255,10 +255,15 @@ class JobStorage:
         remote: str = "",
         job_type: str = "",
         salary_min: Optional[float] = None,
+        match_min: Optional[float] = None,
+        match_prompt_id: Optional[int] = None,
+        match_resume_hash: str = "",
         posted_in_last_days: Optional[int] = None,
         sort_by: str = "date_posted",
         ascending: bool = False,
         exclude_not_interested: bool = True,
+        exclude_favourites: bool = True,
+        exclude_applied: bool = True,
         region: str = "",
     ) -> list[dict]:
         """Filter and sort stored jobs using SQL."""
@@ -274,12 +279,25 @@ class JobStorage:
             params.append(posted_in_last_days)
 
         if query:
-            conditions.append(
-                "MATCH(title, company, description, tags, location) AGAINST(%s IN BOOLEAN MODE)"
-            )
-            terms = query.strip().split()
-            boolean_query = " ".join(f"+{t}*" for t in terms if t)
-            params.append(boolean_query)
+            import re
+
+            phrases = [
+                part.strip().strip('"').strip()
+                for part in re.split(r",|\bOR\b", query, flags=re.IGNORECASE)
+            ]
+            phrases = list(dict.fromkeys(
+                phrase.lower() for phrase in phrases if phrase
+            ))
+
+            if phrases:
+                title_clauses = [
+                    "LOCATE(%s, LOWER(COALESCE(j.title, ''))) > 0"
+                    for phrase in phrases
+                ]
+                conditions.append("(" + " OR ".join(title_clauses) + ")")
+                params.extend(phrases)
+            else:
+                conditions.append("1 = 0")
 
         if source:
             conditions.append("source = %s")
@@ -297,9 +315,25 @@ class JobStorage:
             conditions.append("(salary_min IS NOT NULL AND salary_min >= %s)")
             params.append(salary_min)
 
+        if match_min is not None:
+            conditions.append(
+                "(rms.match_score IS NOT NULL AND rms.match_score >= %s)"
+            )
+            params.append(match_min)
+
         if exclude_not_interested:
             conditions.append(
                 "j.job_id NOT IN (SELECT ni.job_id FROM not_interested ni)"
+            )
+
+        if exclude_favourites:
+            conditions.append(
+                "j.job_id NOT IN (SELECT f.job_id FROM favourites f)"
+            )
+
+        if exclude_applied:
+            conditions.append(
+                "j.job_id NOT IN (SELECT a.job_id FROM applications a)"
             )
 
         if region:
@@ -314,6 +348,7 @@ class JobStorage:
         allowed_sort = {
             "date_scraped", "title", "company", "source",
             "salary_min", "salary_max", "date_posted",
+            "match_score",
         }
         if sort_by not in allowed_sort:
             sort_by = "date_posted"
@@ -325,15 +360,51 @@ class JobStorage:
                 "CASE WHEN `date_posted` REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN `date_posted` ELSE '0000-00-00' END"
                 f" {direction}, `date_scraped` {direction}"
             )
+        elif sort_by == "match_score":
+            # Keep jobs without a resume score at the bottom.
+            order_expr = (
+                "(rms.match_score IS NULL) ASC, "
+                f"rms.match_score {direction}, "
+                "`date_scraped` DESC"
+            )
         else:
             order_expr = f"`{sort_by}` {direction}"
 
-        sql = f"SELECT j.* FROM jobs j{where} ORDER BY {order_expr}"
+        join_params = []
+
+        if match_prompt_id is not None and match_resume_hash:
+            resume_match_join = """
+                LEFT JOIN resume_match_scores rms
+                    ON rms.job_id = j.job_id
+                   AND rms.prompt_id = %s
+                   AND rms.resume_hash = %s
+            """
+            join_params.extend([match_prompt_id, match_resume_hash])
+        else:
+            # Keep the SELECT shape consistent when no CV/profile is selected.
+            resume_match_join = """
+                LEFT JOIN resume_match_scores rms ON 1 = 0
+            """
+
+        sql = f"""
+            SELECT
+                j.*,
+                rms.match_score AS resume_match_score,
+                rms.semantic_score AS resume_semantic_score,
+                rms.title_score AS resume_title_score
+            FROM jobs j
+
+            {resume_match_join}
+
+            {where}
+
+            ORDER BY {order_expr}
+        """
 
         conn = _get_conn()
         try:
             cursor = conn.cursor(dictionary=True)
-            cursor.execute(sql, params)
+            cursor.execute(sql, join_params + params)
             rows = cursor.fetchall()
             cursor.close()
             return self._normalize_rows(rows)
@@ -1152,6 +1223,186 @@ class JobStorage:
             removed = cursor.rowcount > 0
             cursor.close()
             return removed
+        finally:
+            conn.close()
+
+    def set_ai_prompt_resume_link(
+        self,
+        prompt_id: int,
+        source: str,
+        external_id: str,
+        external_name: str = "",
+        mark_synced: bool = False,
+    ) -> bool:
+        """Create or update optional external resume linkage."""
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "SELECT prompt_id FROM ai_prompt_resume_links "
+                "WHERE prompt_id = %s",
+                (prompt_id,),
+            )
+
+            exists = cursor.fetchone() is not None
+
+            if exists:
+                if mark_synced:
+                    cursor.execute(
+                        """UPDATE ai_prompt_resume_links
+                           SET source=%s,
+                               external_id=%s,
+                               external_name=%s,
+                               synced_at=CURRENT_TIMESTAMP
+                           WHERE prompt_id=%s""",
+                        (
+                            source,
+                            external_id,
+                            external_name,
+                            prompt_id,
+                        ),
+                    )
+                else:
+                    cursor.execute(
+                        """UPDATE ai_prompt_resume_links
+                           SET source=%s,
+                               external_id=%s,
+                               external_name=%s
+                           WHERE prompt_id=%s""",
+                        (
+                            source,
+                            external_id,
+                            external_name,
+                            prompt_id,
+                        ),
+                    )
+            else:
+                if mark_synced:
+                    cursor.execute(
+                        """INSERT INTO ai_prompt_resume_links
+                           (
+                               prompt_id,
+                               source,
+                               external_id,
+                               external_name,
+                               synced_at
+                           )
+                           VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)""",
+                        (
+                            prompt_id,
+                            source,
+                            external_id,
+                            external_name,
+                        ),
+                    )
+                else:
+                    cursor.execute(
+                        """INSERT INTO ai_prompt_resume_links
+                           (
+                               prompt_id,
+                               source,
+                               external_id,
+                               external_name
+                           )
+                           VALUES (%s, %s, %s, %s)""",
+                        (
+                            prompt_id,
+                            source,
+                            external_id,
+                            external_name,
+                        ),
+                    )
+
+            conn.commit()
+            cursor.close()
+            return True
+
+        finally:
+            conn.close()
+
+    def get_ai_prompt_resume_link(
+        self,
+        prompt_id: int,
+    ) -> Optional[dict]:
+        """Return optional external resume linkage."""
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor(dictionary=True)
+
+            cursor.execute(
+                """SELECT
+                       source        AS resume_source,
+                       external_id   AS resume_external_id,
+                       external_name AS resume_external_name,
+                       synced_at     AS resume_synced_at
+                   FROM ai_prompt_resume_links
+                   WHERE prompt_id = %s""",
+                (prompt_id,),
+            )
+
+            row = cursor.fetchone()
+            cursor.close()
+
+            if row is None:
+                return None
+
+            return self._normalize_note(row)
+
+        finally:
+            conn.close()
+
+    def get_ai_prompt_resume_links(self) -> dict:
+        """Return all resume links keyed by prompt id."""
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor(dictionary=True)
+
+            cursor.execute(
+                """SELECT
+                       prompt_id,
+                       source        AS resume_source,
+                       external_id   AS resume_external_id,
+                       external_name AS resume_external_name,
+                       synced_at     AS resume_synced_at
+                   FROM ai_prompt_resume_links"""
+            )
+
+            rows = cursor.fetchall()
+            cursor.close()
+
+            result = {}
+
+            for row in rows:
+                prompt_id = int(row["prompt_id"])
+                row.pop("prompt_id", None)
+                result[prompt_id] = self._normalize_note(row)
+
+            return result
+
+        finally:
+            conn.close()
+
+    def delete_ai_prompt_resume_link(
+        self,
+        prompt_id: int,
+    ) -> bool:
+        """Detach an external resume while leaving the local CV intact."""
+        conn = _get_conn()
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "DELETE FROM ai_prompt_resume_links "
+                "WHERE prompt_id = %s",
+                (prompt_id,),
+            )
+
+            removed = cursor.rowcount > 0
+            conn.commit()
+            cursor.close()
+            return removed
+
         finally:
             conn.close()
 

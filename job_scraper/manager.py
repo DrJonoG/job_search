@@ -9,11 +9,14 @@ Search Manager – orchestrates searches across all configured sources.
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from threading import Thread
+from pathlib import Path
+from threading import Thread, Lock
 from typing import Dict, List, Optional
 
 import config
@@ -81,6 +84,7 @@ class SearchManager:
     def __init__(self, storage: JobStorage) -> None:
         self.storage = storage
         self._tasks: Dict[str, SearchTask] = {}
+        self._resume_match_lock = Lock()
 
     # ── public API ─────────────────────────────────────────────
     def start_search(
@@ -133,6 +137,107 @@ class SearchManager:
         return True
 
     # ── internal ───────────────────────────────────────────────
+    def _run_resume_matcher(self) -> None:
+        """Incrementally score jobs using the active AI Prompt."""
+        with self._resume_match_lock:
+            try:
+                prompt = self.storage.get_active_ai_prompt()
+
+                if not prompt:
+                    logger.info(
+                        "Resume matcher skipped: no active AI Prompt."
+                    )
+                    return
+
+                cv = (prompt.get("cv") or "").strip()
+
+                if len(cv) < 200:
+                    logger.info(
+                        "Resume matcher skipped: active AI Prompt #%s "
+                        "has no usable CV.",
+                        prompt.get("id"),
+                    )
+                    return
+
+                prompt_id = int(prompt["id"])
+
+                project_root = (
+                    Path(__file__).resolve().parent.parent
+                )
+
+                matcher = (
+                    project_root
+                    / "tools"
+                    / "resume_matcher.py"
+                )
+
+                logger.info(
+                    "Starting automatic resume matching "
+                    "with AI Prompt #%d %r",
+                    prompt_id,
+                    prompt.get("title") or "",
+                )
+
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(matcher),
+                        "--prompt-id",
+                        str(prompt_id),
+                        "--incremental",
+                        "--top",
+                        "0",
+                    ],
+                    cwd=str(project_root),
+                    capture_output=True,
+                    text=True,
+                    timeout=900,
+                )
+
+                if result.returncode != 0:
+                    logger.warning(
+                        "Automatic resume matcher failed "
+                        "(exit %d): %s",
+                        result.returncode,
+                        (
+                            result.stderr
+                            or result.stdout
+                            or "No output"
+                        ).strip(),
+                    )
+                    return
+
+                logger.info(
+                    "Automatic resume matching completed "
+                    "for AI Prompt #%d.",
+                    prompt_id,
+                )
+
+                for line in (result.stdout or "").splitlines():
+                    if line.startswith(
+                        (
+                            "Resume Matcher sync:",
+                "Profile source:",
+                            "Mode:",
+                            "Jobs loaded:",
+                            "Eligible leadership jobs:",
+                            "Eligible jobs scored:",
+                            "No eligible jobs found.",
+                        )
+                    ):
+                        logger.info("Resume matcher: %s", line)
+
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "Automatic resume matcher timed out."
+                )
+
+            except Exception:
+                logger.exception(
+                    "Automatic resume matcher failed unexpectedly."
+                )
+
+
     def _run_search(
         self,
         task: SearchTask,
@@ -280,6 +385,10 @@ class SearchManager:
             task.status = "cancelled"
             task.finished_at = time.time()
             return
+
+        task.current_source = "Resume matching"
+        self._run_resume_matcher()
+        task.current_source = ""
 
         task.status = "completed" if not task.errors else "completed"
         task.finished_at = time.time()

@@ -1278,3 +1278,36 @@ a:hover {
     border: 1px solid var(--card-border);
     border-radius: var(--radius-sm);
 }
+
+
+/* Job Board filter sidebar viewport fix */
+@media (min-width: 992px) {
+    .filter-sidebar {
+        position: sticky;
+        top: 80px;
+
+        /* Keep the entire filter panel inside the viewport */
+        max-height: calc(100vh - 96px);
+
+        /* Scroll the filters independently of the job list */
+        overflow-y: auto;
+        overflow-x: hidden;
+
+        /* Prevent the panel width jumping when the scrollbar appears */
+        scrollbar-gutter: stable;
+
+        /* Keep wheel scrolling inside the filter panel while needed */
+        overscroll-behavior: contain;
+
+        scrollbar-width: thin;
+    }
+}
+
+/* On tablets/phones use normal page scrolling */
+@media (max-width: 991.98px) {
+    .filter-sidebar {
+        position: static;
+        max-height: none;
+        overflow: visible;
+    }
+}

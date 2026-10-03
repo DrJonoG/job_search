@@ -14,3 +14,9 @@ python-jobspy        # Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google via Job
 
 # Optional for LinkedIn (Direct) browser mode (log in once, scrape rendered page, auto-close):
 playwright           # Also run: playwright install chromium
+
+# Resume matching / document parsing
+sentence-transformers==4.1.0
+numpy==1.26.3
+pypdf==4.3.1
+python-docx==1.2.0

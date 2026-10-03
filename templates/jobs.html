@@ -106,7 +106,7 @@
                 </div>
 
                 <!-- Not Interested -->
-                <div class="mb-3">
+                <div class="mb-2">
                     <div class="form-check">
                         <input class="form-check-input" type="checkbox" id="filterIncludeNotInterested">
                         <label class="form-check-label small" for="filterIncludeNotInterested">
@@ -115,11 +115,66 @@
                     </div>
                 </div>
 
+                <!-- Favourites -->
+                <div class="mb-2">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="filterIncludeFavourites">
+                        <label class="form-check-label small" for="filterIncludeFavourites">
+                            Include favourites
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Applied -->
+                <div class="mb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="filterIncludeApplied">
+                        <label class="form-check-label small" for="filterIncludeApplied">
+                            Include applied
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Resume / AI Prompt -->
+                <div class="mb-3">
+                    <label class="form-label fw-semibold small">Resume / Profile</label>
+                    <select class="form-select form-select-sm" id="filterMatchPrompt">
+                        <option value="">Loading profiles...</option>
+                    </select>
+
+                    <button
+                        type="button"
+                        class="btn btn-outline-primary btn-sm w-100 mt-2"
+                        id="scoreMatchProfileBtn"
+                        onclick="scoreSelectedResumeProfile()"
+                        disabled>
+                        <i class="bi bi-stars me-1"></i>
+                        Score / Re-score Profile
+                    </button>
+
+                    <div class="form-text">
+                        Uses the CV and context stored in AI Prompts.
+                    </div>
+                </div>
+
+                <!-- Resume Match -->
+                <div class="mb-3">
+                    <label class="form-label fw-semibold small">Minimum Resume Match</label>
+                    <select class="form-select form-select-sm" id="filterMatchMin">
+                        <option value="">Any</option>
+                        <option value="70">70%+</option>
+                        <option value="75">75%+</option>
+                        <option value="80">80%+</option>
+                        <option value="85">85%+</option>
+                    </select>
+                </div>
+
                 <!-- Sort (default: Date Posted, newest first) -->
                 <div class="mb-3">
                     <label class="form-label fw-semibold small">Sort By</label>
                     <select class="form-select form-select-sm" id="filterSort">
                         <option value="date_posted" selected>Date Posted (newest first)</option>
+                        <option value="match_score">Resume Match</option>
                         <option value="date_scraped">Date Added</option>
                         <option value="salary_max">Salary (High to Low)</option>
                         <option value="title">Title (A-Z)</option>

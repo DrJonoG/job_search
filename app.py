@@ -66,6 +66,45 @@ _ANALYSIS_REQUIRED      = _prompts.ANALYSIS_REQUIRED_FIELDS
 _VALID_RECOMMENDATIONS  = _prompts.VALID_RECOMMENDATIONS
 
 
+def _resume_match_profile_hash(prompt_config: dict) -> str:
+    """Return the profile hash used by tools/resume_matcher.py."""
+    import hashlib
+    import re
+
+    def clean_text(value):
+        value = (value or "").replace("\r", "\n")
+        value = re.sub(r"\n{3,}", "\n\n", value)
+        value = re.sub(r"[ \t]+", " ", value)
+        return value.strip()
+
+    resume_text = clean_text(prompt_config.get("cv") or "")
+
+    sections = []
+
+    for label, field in (
+        ("About Me", "about_me"),
+        ("Preferences", "preferences"),
+        ("Extra Context", "extra_context"),
+    ):
+        value = (prompt_config.get(field) or "").strip()
+
+        if value:
+            sections.append(f"{label}:\n{value}")
+
+    profile_context = clean_text("\n\n".join(sections))
+
+    profile_material = resume_text
+
+    if profile_context:
+        profile_material += (
+            "\n\n--- PROFILE CONTEXT ---\n" + profile_context
+        )
+
+    return hashlib.sha256(
+        profile_material.encode("utf-8")
+    ).hexdigest()
+
+
 def _build_analysis_user_message(prompt_config: dict, job: dict) -> str:
     """Compose the user-turn message combining candidate context with job data."""
     cv            = (prompt_config.get("cv")            or "").strip() or "(not provided)"
@@ -850,6 +889,127 @@ def api_linkedin_setup_complete(task_id):
     return jsonify({"status": "closing"})
 
 
+@app.route("/api/resume-match/<int:prompt_id>", methods=["POST"])
+def api_score_resume_profile(prompt_id):
+    """
+    Fully score/re-score the selected Job Search AI Prompt/CV.
+
+    This is deliberately a full re-score rather than incremental so
+    the button can also be used after editing a CV or profile.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    prompt = storage.get_ai_prompt(prompt_id)
+
+    if not prompt:
+        return jsonify({"error": "AI Prompt not found"}), 404
+
+    cv = (prompt.get("cv") or "").strip()
+
+    if len(cv) < 200:
+        return jsonify({
+            "error": "This AI Prompt does not contain a usable CV/resume."
+        }), 400
+
+    project_root = Path(__file__).resolve().parent
+    matcher_script = project_root / "tools" / "resume_matcher.py"
+
+    if not matcher_script.exists():
+        return jsonify({
+            "error": f"Resume matcher not found: {matcher_script}"
+        }), 500
+
+    try:
+        # Use the same lock as automatic post-search matching so
+        # automatic and manual scoring cannot run simultaneously.
+        lock = getattr(manager, "_resume_match_lock", None)
+
+        def run_matcher():
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(matcher_script),
+                    "--prompt-id",
+                    str(prompt_id),
+                    "--top",
+                    "0",
+                ],
+                cwd=str(project_root),
+                capture_output=True,
+                text=True,
+                timeout=900,
+            )
+
+        if lock is not None:
+            with lock:
+                result = run_matcher()
+        else:
+            result = run_matcher()
+
+    except subprocess.TimeoutExpired:
+        return jsonify({
+            "error": "Resume matching timed out after 15 minutes."
+        }), 504
+
+    except Exception as exc:
+        logger.exception(
+            "Manual resume matching failed for prompt #%d",
+            prompt_id,
+        )
+        return jsonify({
+            "error": f"Resume matching failed: {exc}"
+        }), 500
+
+    if result.returncode != 0:
+        logger.warning(
+            "Manual resume matcher failed for prompt #%d: %s",
+            prompt_id,
+            (result.stderr or result.stdout or "").strip(),
+        )
+
+        return jsonify({
+            "error": (
+                result.stderr
+                or result.stdout
+                or "Resume matcher exited with an error."
+            ).strip()
+        }), 500
+
+    # Pull useful summary information from matcher stdout.
+    summary = []
+
+    prefixes = (
+        "Resume Matcher sync:",
+        "Profile source:",
+        "Resume chunks:",
+        "Jobs loaded:",
+        "Eligible leadership jobs:",
+        "Skipped -",
+        "Eligible jobs scored:",
+        "Duplicate listings hidden",
+        "No eligible jobs found.",
+    )
+
+    for line in (result.stdout or "").splitlines():
+        if line.startswith(prefixes):
+            summary.append(line)
+
+    logger.info(
+        "Manual resume matching completed for AI Prompt #%d %r",
+        prompt_id,
+        prompt.get("title") or "",
+    )
+
+    return jsonify({
+        "status": "completed",
+        "prompt_id": prompt_id,
+        "prompt_title": prompt.get("title") or "",
+        "summary": summary,
+    })
+
+
 @app.route("/api/jobs")
 def api_jobs():
     """Query saved jobs with filters + pagination."""
@@ -858,6 +1018,23 @@ def api_jobs():
     remote = request.args.get("remote", "")
     job_type = request.args.get("job_type", "")
     salary_min = request.args.get("salary_min", type=float, default=None)
+    match_min = request.args.get("match_min", type=float, default=None)
+    match_prompt_id = request.args.get(
+        "match_prompt_id",
+        type=int,
+        default=None,
+    )
+
+    match_resume_hash = ""
+
+    if match_prompt_id is not None:
+        match_prompt = storage.get_ai_prompt(match_prompt_id)
+
+        if not match_prompt:
+            return jsonify({"error": "Resume/AI Prompt not found"}), 400
+
+        match_resume_hash = _resume_match_profile_hash(match_prompt)
+
     posted_in_last_days = request.args.get("posted_in_last_days", type=int, default=None)
     if posted_in_last_days is not None and posted_in_last_days <= 0:
         posted_in_last_days = None
@@ -868,6 +1045,13 @@ def api_jobs():
 
     include_not_interested = request.args.get("include_not_interested", "0")
     exclude_ni = include_not_interested not in ("1", "true", "yes")
+
+    include_favourites = request.args.get("include_favourites", "0")
+    exclude_fav = include_favourites not in ("1", "true", "yes")
+
+    include_applied = request.args.get("include_applied", "0")
+    exclude_applied = include_applied not in ("1", "true", "yes")
+
     region = request.args.get("region", "")
 
     all_jobs = storage.search(
@@ -876,10 +1060,15 @@ def api_jobs():
         remote=remote,
         job_type=job_type,
         salary_min=salary_min,
+        match_min=match_min,
+        match_prompt_id=match_prompt_id,
+        match_resume_hash=match_resume_hash,
         posted_in_last_days=posted_in_last_days,
         sort_by=sort_by,
         ascending=(order == "asc"),
         exclude_not_interested=exclude_ni,
+        exclude_favourites=exclude_fav,
+        exclude_applied=exclude_applied,
         region=region,
     )
 
@@ -1215,12 +1404,388 @@ def api_delete_saved_board_search(search_id):
     return jsonify({"status": "deleted", "id": search_id})
 
 
+
+# ── Resume Matcher integration ──────────────────────────────────
+
+def _resume_matcher_get(path: str, params: dict | None = None) -> dict:
+    """GET JSON from the configured Resume Matcher server."""
+    base_url = getattr(config, "RESUME_MATCHER_URL", "").rstrip("/")
+
+    if not base_url:
+        raise RuntimeError("RESUME_MATCHER_URL is not configured")
+
+    url = base_url + path
+
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "job-search-resume-matcher/1.0",
+        },
+    )
+
+    with urllib.request.urlopen(req, timeout=15) as response:
+        raw = response.read().decode("utf-8")
+        return _json.loads(raw)
+
+
+def _resume_matcher_resume_to_text(data: dict) -> str:
+    """
+    Convert Resume Matcher's structured processed_resume into clean
+    plain text suitable for Job Search AI Prompts and embeddings.
+    """
+    resume = data.get("processed_resume") or {}
+
+    if not isinstance(resume, dict):
+        resume = {}
+
+    lines = []
+
+    def add(value=""):
+        if value is None:
+            return
+        value = str(value).strip()
+        if value:
+            lines.append(value)
+
+    def heading(value):
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.append(str(value).upper())
+
+    # Personal information
+    personal = resume.get("personalInfo") or {}
+
+    add(personal.get("name"))
+    add(personal.get("title"))
+
+    contact = [
+        personal.get("location"),
+        personal.get("email"),
+        personal.get("phone"),
+    ]
+    contact = [str(v).strip() for v in contact if v]
+    if contact:
+        add(" | ".join(contact))
+
+    add(personal.get("linkedin"))
+    add(personal.get("github"))
+    add(personal.get("website"))
+
+    # Summary
+    summary = resume.get("summary")
+    if summary:
+        heading("Summary")
+        add(summary)
+
+    # Work Experience
+    experience = resume.get("workExperience") or []
+
+    if experience:
+        heading("Experience")
+
+        for job in experience:
+            if not isinstance(job, dict):
+                continue
+
+            title = (job.get("title") or "").strip()
+            company = (job.get("company") or "").strip()
+
+            if title and company:
+                add(f"{title} | {company}")
+            else:
+                add(title or company)
+
+            details = [
+                job.get("location"),
+                job.get("years"),
+            ]
+            details = [str(v).strip() for v in details if v]
+
+            if details:
+                add(" | ".join(details))
+
+            for bullet in job.get("description") or []:
+                bullet = str(bullet).strip()
+                if bullet:
+                    add(f"- {bullet}")
+
+            lines.append("")
+
+    # Education
+    education = resume.get("education") or []
+
+    if education:
+        heading("Education")
+
+        for item in education:
+            if not isinstance(item, dict):
+                continue
+
+            institution = (item.get("institution") or "").strip()
+            degree = (item.get("degree") or "").strip()
+
+            if degree and institution:
+                add(f"{degree} | {institution}")
+            else:
+                add(degree or institution)
+
+            add(item.get("years"))
+
+            description = item.get("description")
+            if isinstance(description, list):
+                for bullet in description:
+                    add(f"- {bullet}")
+            elif description:
+                add(description)
+
+    # Projects
+    projects = resume.get("personalProjects") or []
+
+    if projects:
+        heading("Projects")
+
+        for project in projects:
+            if isinstance(project, dict):
+                add(project.get("title") or project.get("name"))
+
+                description = project.get("description") or []
+                if isinstance(description, list):
+                    for bullet in description:
+                        add(f"- {bullet}")
+                elif description:
+                    add(description)
+
+    # Skills / certifications / languages / awards
+    additional = resume.get("additional") or {}
+
+    sections = [
+        ("Technical Skills", additional.get("technicalSkills")),
+        (
+            "Certifications & Training",
+            additional.get("certificationsTraining"),
+        ),
+        ("Languages", additional.get("languages")),
+        ("Awards", additional.get("awards")),
+    ]
+
+    for label, values in sections:
+        if not values:
+            continue
+
+        heading(label)
+
+        if isinstance(values, list):
+            for value in values:
+                add(f"- {value}")
+        else:
+            add(values)
+
+    # Custom Resume Matcher sections
+    custom_sections = resume.get("customSections") or {}
+
+    for section_name, section in custom_sections.items():
+        if not isinstance(section, dict):
+            continue
+
+        heading(section_name.replace("_", " ").title())
+
+        for item in section.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+
+            title = item.get("title")
+            subtitle = item.get("subtitle")
+
+            if title and subtitle:
+                add(f"{title} | {subtitle}")
+            else:
+                add(title or subtitle)
+
+            add(item.get("location"))
+            add(item.get("years"))
+
+            description = item.get("description") or []
+
+            if isinstance(description, list):
+                for bullet in description:
+                    add(f"- {bullet}")
+            elif description:
+                add(description)
+
+        for value in section.get("strings") or []:
+            add(f"- {value}")
+
+        add(section.get("text"))
+
+    # Remove excessive blank lines
+    cleaned = []
+    previous_blank = False
+
+    for line in lines:
+        blank = not str(line).strip()
+
+        if blank and previous_blank:
+            continue
+
+        cleaned.append(line)
+        previous_blank = blank
+
+    return "\n".join(cleaned).strip()
+
+
+@app.route("/api/resume-matcher/status")
+def api_resume_matcher_status():
+    """Test connectivity to Resume Matcher."""
+    try:
+        payload = _resume_matcher_get("/api/v1/health")
+
+        return jsonify({
+            "connected": True,
+            "server": config.RESUME_MATCHER_URL,
+            "status": payload.get("status", "unknown"),
+        })
+
+    except Exception as exc:
+        logger.warning(
+            "Resume Matcher connectivity test failed: %s",
+            exc,
+        )
+
+        return jsonify({
+            "connected": False,
+            "server": getattr(config, "RESUME_MATCHER_URL", ""),
+            "error": str(exc),
+        }), 502
+
+
+@app.route("/api/resume-matcher/resumes")
+def api_resume_matcher_resumes():
+    """List all master and tailored resumes in Resume Matcher."""
+    try:
+        payload = _resume_matcher_get(
+            "/api/v1/resumes/list",
+            {"include_master": "true"},
+        )
+
+        resumes = payload.get("data") or []
+
+        return jsonify({
+            "server": config.RESUME_MATCHER_URL,
+            "resumes": resumes,
+            "total": len(resumes),
+        })
+
+    except urllib.error.HTTPError as exc:
+        return jsonify({
+            "error": (
+                f"Resume Matcher returned HTTP {exc.code}"
+            )
+        }), 502
+
+    except Exception as exc:
+        logger.exception("Could not list Resume Matcher resumes")
+
+        return jsonify({
+            "error": str(exc)
+        }), 502
+
+
+@app.route("/api/resume-matcher/resumes/<resume_id>")
+def api_resume_matcher_resume(resume_id):
+    """Retrieve and convert one Resume Matcher resume."""
+    try:
+        payload = _resume_matcher_get(
+            "/api/v1/resumes",
+            {"resume_id": resume_id},
+        )
+
+        data = payload.get("data") or {}
+
+        cv_text = _resume_matcher_resume_to_text(data)
+
+        # Fallback for older Resume Matcher versions.
+        if len(cv_text) < 100:
+            raw_resume = data.get("raw_resume") or {}
+            raw_content = raw_resume.get("content") or ""
+
+            try:
+                parsed = _json.loads(raw_content)
+
+                if isinstance(parsed, dict):
+                    synthetic = {
+                        "processed_resume": parsed
+                    }
+                    cv_text = _resume_matcher_resume_to_text(
+                        synthetic
+                    )
+                else:
+                    cv_text = raw_content
+
+            except Exception:
+                cv_text = raw_content
+
+        if len(cv_text.strip()) < 100:
+            return jsonify({
+                "error": (
+                    "Resume Matcher returned a resume but "
+                    "no usable resume text was found."
+                )
+            }), 422
+
+        return jsonify({
+            "resume_id": data.get("resume_id") or resume_id,
+            "title": data.get("title"),
+            "parent_id": data.get("parent_id"),
+            "is_master": bool(data.get("is_master")),
+            "cv_text": cv_text,
+        })
+
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return jsonify({
+                "error": "Resume not found in Resume Matcher"
+            }), 404
+
+        return jsonify({
+            "error": (
+                f"Resume Matcher returned HTTP {exc.code}"
+            )
+        }), 502
+
+    except Exception as exc:
+        logger.exception(
+            "Could not retrieve Resume Matcher resume %s",
+            resume_id,
+        )
+
+        return jsonify({
+            "error": str(exc)
+        }), 502
+
+
 # ── AI Prompts API ─────────────────────────────────────────────
 
 @app.route("/api/ai-prompts", methods=["GET"])
 def api_ai_prompts_list():
     """List all AI prompt configurations."""
     prompts = storage.get_ai_prompts()
+    links = storage.get_ai_prompt_resume_links()
+
+    for prompt in prompts:
+        link = links.get(int(prompt["id"]))
+
+        prompt["resume_source"] = None
+        prompt["resume_external_id"] = None
+        prompt["resume_external_name"] = None
+        prompt["resume_synced_at"] = None
+
+        if link:
+            prompt.update(link)
+
     return jsonify({"prompts": prompts, "total": len(prompts)})
 
 
@@ -1258,8 +1823,20 @@ def api_create_ai_prompt():
 def api_get_ai_prompt(prompt_id):
     """Get a single AI prompt configuration."""
     prompt = storage.get_ai_prompt(prompt_id)
+
     if not prompt:
         return jsonify({"error": "AI prompt not found"}), 404
+
+    link = storage.get_ai_prompt_resume_link(prompt_id)
+
+    prompt["resume_source"] = None
+    prompt["resume_external_id"] = None
+    prompt["resume_external_name"] = None
+    prompt["resume_synced_at"] = None
+
+    if link:
+        prompt.update(link)
+
     return jsonify(prompt)
 
 
@@ -1296,9 +1873,197 @@ def api_update_ai_prompt(prompt_id):
     return jsonify({"status": "updated", "id": prompt_id})
 
 
+@app.route(
+    "/api/ai-prompts/<int:prompt_id>/resume-link",
+    methods=["POST"],
+)
+def api_link_ai_prompt_resume(prompt_id):
+    """Link a saved AI Prompt to an optional external resume."""
+    prompt = storage.get_ai_prompt(prompt_id)
+
+    if not prompt:
+        return jsonify({"error": "AI prompt not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    source = (data.get("source") or "").strip()
+    external_id = (data.get("external_id") or "").strip()
+    external_name = (data.get("external_name") or "").strip()
+    mark_synced = bool(data.get("mark_synced"))
+
+    if not source or not external_id:
+        return jsonify({
+            "error": "source and external_id are required"
+        }), 400
+
+    storage.set_ai_prompt_resume_link(
+        prompt_id=prompt_id,
+        source=source,
+        external_id=external_id,
+        external_name=external_name,
+        mark_synced=mark_synced,
+    )
+
+    link = storage.get_ai_prompt_resume_link(prompt_id)
+
+    return jsonify({
+        "status": "linked",
+        "id": prompt_id,
+        "link": link,
+    })
+
+
+@app.route(
+    "/api/ai-prompts/<int:prompt_id>/resume-link",
+    methods=["DELETE"],
+)
+def api_unlink_ai_prompt_resume(prompt_id):
+    """
+    Detach the Resume Matcher link.
+
+    The CV text already stored in Job Search is deliberately preserved,
+    turning the prompt back into a normal/manual prompt.
+    """
+    prompt = storage.get_ai_prompt(prompt_id)
+
+    if not prompt:
+        return jsonify({"error": "AI prompt not found"}), 404
+
+    storage.delete_ai_prompt_resume_link(prompt_id)
+
+    return jsonify({
+        "status": "unlinked",
+        "id": prompt_id,
+    })
+
+
+@app.route(
+    "/api/ai-prompts/<int:prompt_id>/sync-resume",
+    methods=["POST"],
+)
+def api_sync_ai_prompt_resume(prompt_id):
+    """Refresh a linked Job Search CV from Resume Matcher."""
+    prompt = storage.get_ai_prompt(prompt_id)
+
+    if not prompt:
+        return jsonify({"error": "AI prompt not found"}), 404
+
+    link = storage.get_ai_prompt_resume_link(prompt_id)
+
+    if not link:
+        return jsonify({
+            "error": "This AI Prompt is not linked to an external resume."
+        }), 400
+
+    if link.get("resume_source") != "resume_matcher":
+        return jsonify({
+            "error": "Unsupported external resume source."
+        }), 400
+
+    resume_id = link.get("resume_external_id")
+
+    try:
+        payload = _resume_matcher_get(
+            "/api/v1/resumes",
+            {"resume_id": resume_id},
+        )
+
+        resume_data = payload.get("data") or {}
+
+        cv_text = _resume_matcher_resume_to_text(
+            resume_data
+        )
+
+        if len(cv_text.strip()) < 100:
+            raw_resume = resume_data.get(
+                "raw_resume"
+            ) or {}
+
+            raw_content = (
+                raw_resume.get("content") or ""
+            )
+
+            try:
+                parsed = _json.loads(raw_content)
+
+                if isinstance(parsed, dict):
+                    cv_text = _resume_matcher_resume_to_text({
+                        "processed_resume": parsed
+                    })
+                else:
+                    cv_text = raw_content
+
+            except Exception:
+                cv_text = raw_content
+
+        if len(cv_text.strip()) < 100:
+            return jsonify({
+                "error": (
+                    "Resume Matcher returned no usable resume text."
+                )
+            }), 422
+
+        storage.update_ai_prompt(
+            prompt_id=prompt_id,
+            title=prompt.get("title") or "",
+            model=prompt.get("model") or "",
+            cv=cv_text,
+            about_me=prompt.get("about_me") or "",
+            preferences=prompt.get("preferences") or "",
+            extra_context=prompt.get("extra_context") or "",
+            is_active=bool(prompt.get("is_active")),
+        )
+
+        storage.set_ai_prompt_resume_link(
+            prompt_id=prompt_id,
+            source="resume_matcher",
+            external_id=resume_id,
+            external_name=(
+                link.get("resume_external_name") or ""
+            ),
+            mark_synced=True,
+        )
+
+        updated_link = storage.get_ai_prompt_resume_link(
+            prompt_id
+        )
+
+        logger.info(
+            "AI Prompt #%d synced from Resume Matcher resume %s",
+            prompt_id,
+            resume_id,
+        )
+
+        return jsonify({
+            "status": "synced",
+            "id": prompt_id,
+            "cv": cv_text,
+            "cv_chars": len(cv_text),
+            "link": updated_link,
+        })
+
+    except urllib.error.HTTPError as exc:
+        return jsonify({
+            "error": (
+                f"Resume Matcher returned HTTP {exc.code}"
+            )
+        }), 502
+
+    except Exception as exc:
+        logger.exception(
+            "Resume Matcher sync failed for AI Prompt #%d",
+            prompt_id,
+        )
+
+        return jsonify({
+            "error": str(exc)
+        }), 502
+
+
 @app.route("/api/ai-prompts/<int:prompt_id>", methods=["DELETE"])
 def api_delete_ai_prompt(prompt_id):
     """Delete an AI prompt configuration."""
+    storage.delete_ai_prompt_resume_link(prompt_id)
     removed = storage.delete_ai_prompt(prompt_id)
     if not removed:
         return jsonify({"error": "AI prompt not found"}), 404
